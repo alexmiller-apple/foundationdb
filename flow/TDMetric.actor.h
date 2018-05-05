@@ -34,6 +34,7 @@
 #include "flow/genericactors.actor.h"
 #include "flow/CompressedInt.h"
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include "flow/actorcompiler.h"  // This must be the last #include.
 
