@@ -83,7 +83,7 @@ struct DatabaseConfiguration {
 
 	std::string toString() const;
 	StatusObject toJSON(bool noPolicies = false) const;
-	
+
 	RegionInfo getRegion( Optional<Key> dcId ) const {
 		if(!dcId.present()) {
 			return RegionInfo();
@@ -101,7 +101,7 @@ struct DatabaseConfiguration {
 		if(dcId.present() && getRegion(dcId.get()).satelliteTLogReplicationFactor > 0) {
 			result++;
 		}
-		
+
 		if(remoteTLogReplicationFactor > 0) {
 			result++;
 		}
@@ -116,12 +116,12 @@ struct DatabaseConfiguration {
 		}
 		return minRequired;
 	}
-	int32_t minMachinesRequiredPerDatacenter() const { 
+	int32_t minMachinesRequiredPerDatacenter() const {
 		int minRequired = std::max( remoteTLogReplicationFactor, std::max(tLogReplicationFactor, storageTeamSize) );
 		for(auto& r : regions) {
 			minRequired = std::max( minRequired, r.satelliteTLogReplicationFactor/std::max(1, r.satelliteTLogUsableDcs) );
 		}
-		return minRequired; 
+		return minRequired;
 	}
 
 	//Killing an entire datacenter counts as killing one machine in modes that support it
