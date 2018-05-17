@@ -683,11 +683,27 @@ struct SimulationConfig {
 	int processes_per_machine;
 	int coordinators;
 private:
+	// Convenient state for calculating configuration
+	bool generateFearless;
+	std::string replicationPolicy;
+
 	void generateNormalConfig(int minimumReplication);
+	void generateFearlessConfig();
+	void calculateMachineRequirements(int minimumReplication);
 };
 
 SimulationConfig::SimulationConfig(int extraDB, int minimumReplication) : extraDB(extraDB) {
+	generateFearless = g_random->random01() < 0.5;
+	datacenters = generateFearless ? 4 : g_random->randomInt( 1, 4 );
+
 	generateNormalConfig(minimumReplication);
+	//if (generateFearless) {
+	generateFearlessConfig();
+	//}
+	if (replicationPolicy.size()) {
+		set_config(replicationPolicy);
+	}
+	calculateMachineRequirements(minimumReplication);
 }
 
 void SimulationConfig::set_config(std::string config) {
@@ -703,9 +719,8 @@ StringRef StringRefOf(const char* s) {
 }
 
 void SimulationConfig::generateNormalConfig(int minimumReplication) {
+	// FIXME: Drop all `if (generateFearless)` from this function.
 	set_config("new");
-	bool generateFearless = g_random->random01() < 0.5;
-	datacenters = generateFearless ? 4 : g_random->randomInt( 1, 4 );
 	if (g_random->random01() < 0.25) db.desiredTLogCount = g_random->randomInt(1,7);
 	if (g_random->random01() < 0.25) db.masterProxyCount = g_random->randomInt(1,7);
 	if (g_random->random01() < 0.25) db.resolverCount = g_random->randomInt(1,7);
@@ -732,22 +747,22 @@ void SimulationConfig::generateNormalConfig(int minimumReplication) {
 	}
 	case 1: {
 		TEST( true );  // Simulated cluster running in single redundancy mode
-		set_config("single");
+		replicationPolicy = "single";
 		break;
 	}
 	case 2: {
 		TEST( true );  // Simulated cluster running in double redundancy mode
-		set_config("double");
+		replicationPolicy = "double";
 		break;
 	}
 	case 3: {
-		if( datacenters <= 2 || generateFearless ) {
+		if( datacenters <= 2 || datacenters == 4 ) {
 			TEST( true );  // Simulated cluster running in triple redundancy mode
-			set_config("triple");
+			replicationPolicy = "triple";
 		}
 		else if( datacenters == 3 ) {
 			TEST( true );  // Simulated cluster running in 3 data-hall mode
-			set_config("three_data_hall");
+			replicationPolicy = "three_data_hall";
 		}
 		else {
 			ASSERT( false );
@@ -756,6 +771,12 @@ void SimulationConfig::generateNormalConfig(int minimumReplication) {
 	}
 	default:
 		ASSERT(false);  // Programmer forgot to adjust cases.
+	}
+}
+
+void SimulationConfig::generateFearlessConfig() {
+	if (generateFearless && replicationPolicy == "three_data_hall") {
+		replicationPolicy = "triple";
 	}
 
 	if(generateFearless || (datacenters == 2 && g_random->random01() < 0.5)) {
@@ -821,7 +842,7 @@ void SimulationConfig::generateNormalConfig(int minimumReplication) {
 				primaryObj["satellite_logs"] = logs;
 				remoteObj["satellite_logs"] = logs;
 			}
-			
+
 			int remote_replication_type = g_random->randomInt(0,5);
 			switch (remote_replication_type) {
 			case 0: {
@@ -864,8 +885,10 @@ void SimulationConfig::generateNormalConfig(int minimumReplication) {
 
 		set_config("regions=" + json_spirit::write_string(json_spirit::mValue(regionArr), json_spirit::Output_options::none));
 	}
-	
-	if(generateFearless && minimumReplication > 1) { 
+}
+
+void SimulationConfig::calculateMachineRequirements(int minimumReplication) {
+	if(generateFearless && minimumReplication > 1) {
 		//low latency tests in fearless configurations need 4 machines per datacenter (3 for triple replication, 1 that is down during failures).
 		machine_count = 16;
 	} else if(generateFearless) {
