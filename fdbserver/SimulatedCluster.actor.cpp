@@ -19,6 +19,7 @@
  */
 
 #include <fstream>
+#include <boost/lexical_cast.hpp>
 #include "flow/actorcompiler.h"
 #include "fdbrpc/simulator.h"
 #include "fdbclient/FailureMonitorClient.h"
@@ -689,6 +690,7 @@ private:
 
 	void generateNormalConfig(int minimumReplication);
 	void generateFearlessConfig();
+	void generateNonFearlessRegions();
 	void calculateMachineRequirements(int minimumReplication);
 };
 
@@ -697,9 +699,13 @@ SimulationConfig::SimulationConfig(int extraDB, int minimumReplication) : extraD
 	datacenters = generateFearless ? 4 : g_random->randomInt( 1, 4 );
 
 	generateNormalConfig(minimumReplication);
-	//if (generateFearless) {
-	generateFearlessConfig();
-	//}
+	if (generateFearless) {
+		generateFearlessConfig();
+	} else {
+		if (datacenters == 2 && g_random->random01() < 0.5) {
+			generateNonFearlessRegions();
+		}
+	}
 	if (replicationPolicy.size()) {
 		set_config(replicationPolicy);
 	}
@@ -775,36 +781,60 @@ void SimulationConfig::generateNormalConfig(int minimumReplication) {
 }
 
 void SimulationConfig::generateFearlessConfig() {
-	if (generateFearless && replicationPolicy == "three_data_hall") {
+	if (replicationPolicy == "three_data_hall") {
 		replicationPolicy = "triple";
 	}
 
-	if(generateFearless || (datacenters == 2 && g_random->random01() < 0.5)) {
-		StatusObject primaryObj;
-		primaryObj["id"] = "0";
-		primaryObj["priority"] = 0;
+	int nextDcId = 0;
+	int regions = g_random->random01() < 0.80 ? std::min(datacenters, 2) : 1 ;
 
-		StatusObject remoteObj;
-		remoteObj["id"] = "1";
-		remoteObj["priority"] = 1;
+	if (regions > 1) {
+		int remote_replication_type = g_random->randomInt(0,4);
+		switch (remote_replication_type) {
+		case 0: {
+			//FIXME: implement
+			TEST( true );  // Simulated cluster using custom remote redundancy mode
+			break;
+		}
+		case 1: {
+			TEST( true );  // Simulated cluster using single remote redundancy mode
+			set_config("remote_single");
+			break;
+		}
+		case 2: {
+			TEST( true );  // Simulated cluster using double remote redundancy mode
+			set_config("remote_double");
+			break;
+		}
+		case 3: {
+			TEST( true );  // Simulated cluster using triple remote redundancy mode
+			set_config("remote_triple");
+			break;
+		}
+		default:
+			ASSERT(false);  // Programmer forgot to adjust cases.
+		}
+	} else {
+		TEST( true );  // Simulated cluster using no remote redundancy mode
+	}
 
-		bool needsRemote = generateFearless;
-		if(generateFearless) {
-			StatusObject primarySatelliteObj;
-			primarySatelliteObj["id"] = "2";
-			primarySatelliteObj["priority"] = 1;
-			StatusArray primarySatellitesArr;
-			primarySatellitesArr.push_back(primarySatelliteObj);
-			primaryObj["satellites"] = primarySatellitesArr;
+	StatusArray regionArr;
+	for (int regionCount = 0; regionCount < regions; regionCount++ ) {
+		StatusObject regionObj;
+		int myId = nextDcId++;
+		regionObj["id"] = boost::lexical_cast<std::string>(myId);
+		regionObj["priority"] = myId;
 
-			StatusObject remoteSatelliteObj;
-			remoteSatelliteObj["id"] = "3";
-			remoteSatelliteObj["priority"] = 1;
-			StatusArray remoteSatellitesArr;
-			remoteSatellitesArr.push_back(remoteSatelliteObj);
-			remoteObj["satellites"] = remoteSatellitesArr;
+		if (g_random->random01() < 0.5) {  // Add a satellite
+			int satelliteId = nextDcId++;
+			StatusObject satelliteObj;
+			satelliteObj["id"] = boost::lexical_cast<std::string>(satelliteId);
+			satelliteObj["priority"] = satelliteId;
+			StatusArray satellitesArr;
+			satellitesArr.push_back(satelliteObj);
+			regionObj["satellites"] = satellitesArr;
 
-			int satellite_replication_type = g_random->randomInt(0,5);
+			int satellite_replication_type = g_random->randomInt(0, 4);
 			switch (satellite_replication_type) {
 			case 0: {
 				//FIXME: implement
@@ -812,25 +842,18 @@ void SimulationConfig::generateFearlessConfig() {
 				break;
 			}
 			case 1: {
-				TEST( true );  // Simulated cluster using no satellite redundancy mode
+				TEST( true );  // Simulated cluster using single satellite redundancy mode
+				regionObj["satellite_redundancy_mode"] = "one_satellite_single";
 				break;
 			}
 			case 2: {
-				TEST( true );  // Simulated cluster using single satellite redundancy mode
-				primaryObj["satellite_redundancy_mode"] = "one_satellite_single";
-				remoteObj["satellite_redundancy_mode"] = "one_satellite_single";
+				TEST( true );  // Simulated cluster using double satellite redundancy mode
+				regionObj["satellite_redundancy_mode"] = "one_satellite_double";
 				break;
 			}
 			case 3: {
-				TEST( true );  // Simulated cluster using double satellite redundancy mode
-				primaryObj["satellite_redundancy_mode"] = "one_satellite_double";
-				remoteObj["satellite_redundancy_mode"] = "one_satellite_double";
-				break;
-			}
-			case 4: {
 				TEST( true );  // Simulated cluster using triple satellite redundancy mode
-				primaryObj["satellite_redundancy_mode"] = "one_satellite_triple";
-				remoteObj["satellite_redundancy_mode"] = "one_satellite_triple";
+				regionObj["satellite_redundancy_mode"] = "one_satellite_triple";
 				break;
 			}
 			default:
@@ -839,52 +862,32 @@ void SimulationConfig::generateFearlessConfig() {
 
 			if (g_random->random01() < 0.25) {
 				int logs = g_random->randomInt(1,7);
-				primaryObj["satellite_logs"] = logs;
-				remoteObj["satellite_logs"] = logs;
+				regionObj["satellite_logs"] = logs;
 			}
-
-			int remote_replication_type = g_random->randomInt(0,5);
-			switch (remote_replication_type) {
-			case 0: {
-				//FIXME: implement
-				TEST( true );  // Simulated cluster using custom remote redundancy mode
-				break;
-			}
-			case 1: {
-				needsRemote = false;
-				TEST( true );  // Simulated cluster using no remote redundancy mode
-				break;
-			}
-			case 2: {
-				TEST( true );  // Simulated cluster using single remote redundancy mode
-				set_config("remote_single");
-				break;
-			}
-			case 3: {
-				TEST( true );  // Simulated cluster using double remote redundancy mode
-				set_config("remote_double");
-				break;
-			}
-			case 4: {
-				TEST( true );  // Simulated cluster using triple remote redundancy mode
-				set_config("remote_triple");
-				break;
-			}
-			default:
-				ASSERT(false);  // Programmer forgot to adjust cases.
-			}
-
-			if (g_random->random01() < 0.25) db.remoteDesiredTLogCount = g_random->randomInt(1,7);
+		} else {
+			TEST( true );  // Simulated cluster using no satellite redundancy mode
 		}
-
-		StatusArray regionArr;
-		regionArr.push_back(primaryObj);
-		if(needsRemote || g_random->random01() < 0.5) {
-			regionArr.push_back(remoteObj);
-		}
-
-		set_config("regions=" + json_spirit::write_string(json_spirit::mValue(regionArr), json_spirit::Output_options::none));
+		regionArr.push_back(regionObj);
 	}
+
+	if (g_random->random01() < 0.25) db.remoteDesiredTLogCount = g_random->randomInt(1,7);
+
+	set_config("regions=" + json_spirit::write_string(json_spirit::mValue(regionArr), json_spirit::Output_options::none));
+}
+
+void SimulationConfig::generateNonFearlessRegions() {
+	StatusArray regions;
+	for (int i = 0; i < datacenters; i++) {
+		StatusObject datacenter;
+		datacenter["id"] = boost::lexical_cast<std::string>(i);
+		datacenter["priority"] = i;
+		regions.push_back(datacenter);
+	}
+	if (g_random->random01() < 0.50) {
+		// We wish to test having a fearless DC and non-fearless DC in the same cluster.
+		regions.pop_back();
+	}
+	set_config("regions=" + json_spirit::write_string(json_spirit::mValue(regions), json_spirit::Output_options::none));
 }
 
 void SimulationConfig::calculateMachineRequirements(int minimumReplication) {
@@ -928,11 +931,11 @@ void setupSimulatedSystem( vector<Future<Void>> *systemActors, std::string baseF
 	for( auto kv : startingConfigJSON) {
 		startingConfigString += " ";
 		if( kv.second.type() == json_spirit::int_type ) {
-			startingConfigString += kv.first + ":=" + format("%d", kv.second.get_int()); 
+			startingConfigString += kv.first + ":=" + format("%d", kv.second.get_int());
 		} else if( kv.second.type() == json_spirit::str_type ) {
-			startingConfigString += kv.second.get_str(); 
+			startingConfigString += kv.second.get_str();
 		} else if( kv.second.type() == json_spirit::array_type ) {
-			startingConfigString += kv.first + "=" + json_spirit::write_string(json_spirit::mValue(kv.second.get_array()), json_spirit::Output_options::none); 
+			startingConfigString += kv.first + "=" + json_spirit::write_string(json_spirit::mValue(kv.second.get_array()), json_spirit::Output_options::none);
 		} else {
 			ASSERT(false);
 		}
@@ -970,7 +973,7 @@ void setupSimulatedSystem( vector<Future<Void>> *systemActors, std::string baseF
 		g_simulator.hasSatelliteReplication = false;
 		g_simulator.satelliteTLogWriteAntiQuorum = 0;
 	}
-		
+
 	ASSERT(g_simulator.storagePolicy && g_simulator.tLogPolicy);
 	ASSERT(!g_simulator.hasRemoteReplication || g_simulator.remoteTLogPolicy);
 	ASSERT(!g_simulator.hasSatelliteReplication || g_simulator.satelliteTLogPolicy);
