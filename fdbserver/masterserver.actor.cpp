@@ -467,7 +467,7 @@ ACTOR Future<Void> updateRegistration( Reference<MasterData> self, Reference<ILo
 	}
 }
 
-ACTOR Future<Standalone<CommitTransactionRef>> provisionalMaster( Reference<MasterData> parent, Future<Void> activate ) {
+ACTOR Future<std::pair<Standalone<CommitTransactionRef>, ReplyPromise<CommitID>>> provisionalMaster( Reference<MasterData> parent, Future<Void> activate ) {
 	Void _ = wait(activate);
 
 	// Register a fake master proxy (to be provided right here) to make ourselves available to clients
@@ -492,7 +492,6 @@ ACTOR Future<Standalone<CommitTransactionRef>> provisionalMaster( Reference<Mast
 				req.reply.send(Never());  // We can't perform causally consistent reads without recovering
 		}
 		when ( CommitTransactionRequest req = waitNext( parent->provisionalProxies[0].commit.getFuture() ) ) {
-			req.reply.send(Never()); // don't reply (clients always get commit_unknown_result)
 			auto t = &req.transaction;
 			TraceEvent("PM_CTC", parent->dbgid).detail("Snapshot", t->read_snapshot).detail("Now", parent->lastEpochEnd);
 			if (t->read_snapshot == parent->lastEpochEnd && //< So no transactions can fall between the read snapshot and the recovery transaction this (might) be merged with
@@ -507,7 +506,7 @@ ACTOR Future<Standalone<CommitTransactionRef>> provisionalMaster( Reference<Mast
 						out.read_snapshot = invalidVersion;
 						out.mutations.append_deep(out.arena(), t->mutations.begin(), t->mutations.size());
 						out.write_conflict_ranges.append_deep(out.arena(), t->write_conflict_ranges.begin(), t->write_conflict_ranges.size());
-						return out;
+						return std::make_pair(out, req.reply);
 					}
 				}
 			}
@@ -746,15 +745,16 @@ ACTOR Future<Void> recoverFrom( Reference<MasterData> self, Reference<ILogSystem
 	// finish recovery.
 	state Future<Void> recruitments = recruitEverything( self, seedServers, oldLogSystem, initialConfChanges );
 	loop {
-		state Future<Standalone<CommitTransactionRef>> provisional = provisionalMaster(self, delay(1.0));
+		state Future<std::pair<Standalone<CommitTransactionRef>, ReplyPromise<CommitID>>> provisional = provisionalMaster(self, delay(1.0));
 
 		choose {
 			when (Void _ = wait( recruitments )) {
 				provisional.cancel();
 				break;
 			}
-			when (Standalone<CommitTransactionRef> _req = wait( provisional )) {
-				state Standalone<CommitTransactionRef> req = _req;  // mutable
+			when (std::pair<Standalone<CommitTransactionRef>, ReplyPromise<CommitID>> _req = wait( provisional )) {
+				state Standalone<CommitTransactionRef> req = _req.first;  // mutable
+				state ReplyPromise<CommitID> reply = _req.second;
 				TEST(true);  // Emergency transaction processing during recovery
 				TraceEvent("EmergencyTransaction", self->dbgid);
 				for (auto m = req.mutations.begin(); m != req.mutations.end(); ++m)
@@ -767,6 +767,10 @@ ACTOR Future<Void> recoverFrom( Reference<MasterData> self, Reference<ILogSystem
 
 				initialConfChanges->clear();
 				initialConfChanges->push_back(req);
+
+				if (!self->configuration.isValid()) {
+					reply.sendError( operation_failed() );
+				}
 
 				if(self->configuration != oldConf) { //confChange does not trigger when including servers
 					recruitments = recruitEverything( self, seedServers, oldLogSystem, initialConfChanges );
