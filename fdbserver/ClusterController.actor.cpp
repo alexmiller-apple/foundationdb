@@ -823,7 +823,6 @@ public:
 			primaryDC.insert(clusterControllerDcId);
 			for(auto& r : db.config.regions) {
 				if(r.dcId != clusterControllerDcId.get()) {
-					ASSERT(remoteDC.empty());
 					remoteDC.insert(r.dcId);
 				} else {
 					ASSERT(region.dcId == StringRef());
@@ -849,6 +848,7 @@ public:
 
 		if(oldSatelliteTLogFit < newSatelliteTLogFit) return false;
 
+		// FIXME: This checks all remote DCs together as one large DC, which isn't correct.
 		RoleFitness oldRemoteTLogFit(remote_tlogs, ProcessClass::TLog);
 		RoleFitness newRemoteTLogFit((db.config.remoteTLogReplicationFactor > 0 && dbi.recoveryState == RecoveryState::REMOTE_RECOVERED) ? getWorkersForTlogs(db.config, db.config.remoteTLogReplicationFactor, db.config.getDesiredRemoteLogs(), db.config.remoteTLogPolicy, id_used, true, remoteDC) : remote_tlogs, ProcessClass::TLog);
 

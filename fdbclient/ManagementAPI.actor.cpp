@@ -72,7 +72,7 @@ std::map<std::string, std::string> configForToken( std::string const& mode ) {
 		if( key == "regions" ) {
 			json_spirit::mValue mv;
 			json_spirit::read_string( value, mv );
-			
+
 			StatusObject regionObj;
 			regionObj["regions"] = mv;
 			out[p+key] = BinaryWriter::toValue(regionObj, IncludeVersion()).toString();
@@ -99,7 +99,7 @@ std::map<std::string, std::string> configForToken( std::string const& mode ) {
 	std::string redundancy, log_replicas;
 	IRepPolicyRef storagePolicy;
 	IRepPolicyRef tLogPolicy;
-	
+
 	bool redundancySpecified = true;
 	if (mode == "single") {
 		redundancy="1";
@@ -1197,7 +1197,7 @@ ACTOR Future<Void> waitForFullReplication( Database cx ) {
 				ASSERT( !confResults.more && confResults.size() < CLIENT_KNOBS->TOO_MANY );
 				state DatabaseConfiguration config;
 				config.fromKeyValues((VectorRef<KeyValueRef>) confResults);
-			
+
 				state std::vector<Future<Optional<Value>>> replicasFutures;
 				for(auto& region : config.regions) {
 					replicasFutures.push_back(tr.get(datacenterReplicasKeyFor(region.dcId)));

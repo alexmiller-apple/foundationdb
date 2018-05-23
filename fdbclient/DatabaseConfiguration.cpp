@@ -154,8 +154,7 @@ bool DatabaseConfiguration::isValid() const {
 		tLogPolicy &&
 		getDesiredRemoteLogs() >= 1 &&
 		remoteTLogReplicationFactor >= 0 &&
-		regions.size() <= 2 &&
-		( remoteTLogReplicationFactor == 0 || ( remoteTLogPolicy && regions.size() == 2 && durableStorageQuorum == storageTeamSize ) ) ) ) {
+		( remoteTLogReplicationFactor == 0 || ( remoteTLogPolicy && regions.size() > 1 && durableStorageQuorum == storageTeamSize ) ) ) ) {
 		return false;
 	}
 
