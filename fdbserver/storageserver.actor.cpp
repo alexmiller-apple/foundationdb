@@ -107,25 +107,25 @@ struct AddingShard : NonCopyable {
 	bool isTransferred() const { return phase == Waiting; }
 };
 
-struct ShardInfo : ReferenceCounted<ShardInfo>, NonCopyable {
+struct SSShardInfo : ReferenceCounted<SSShardInfo>, NonCopyable {
 	AddingShard* adding;
 	struct StorageServer* readWrite;
 	KeyRange keys;
 	uint64_t changeCounter;
 
-	ShardInfo(KeyRange keys, AddingShard* adding, StorageServer* readWrite)
+	SSShardInfo(KeyRange keys, AddingShard* adding, StorageServer* readWrite)
 		: adding(adding), readWrite(readWrite), keys(keys)
 	{
 	}
 
-	~ShardInfo() {
+	~SSShardInfo() {
 		delete adding;
 	}
 
-	static ShardInfo* newNotAssigned(KeyRange keys) { return new ShardInfo(keys, NULL, NULL); }
-	static ShardInfo* newReadWrite(KeyRange keys, StorageServer* data) { return new ShardInfo(keys, NULL, data); }
-	static ShardInfo* newAdding(StorageServer* data, KeyRange keys) { return new ShardInfo(keys, new AddingShard(data, keys), NULL); }
-	static ShardInfo* addingSplitLeft( KeyRange keys, AddingShard* oldShard) { return new ShardInfo(keys, new AddingShard(oldShard, keys), NULL); }
+	static SSShardInfo* newNotAssigned(KeyRange keys) { return new SSShardInfo(keys, NULL, NULL); }
+	static SSShardInfo* newReadWrite(KeyRange keys, StorageServer* data) { return new SSShardInfo(keys, NULL, data); }
+	static SSShardInfo* newAdding(StorageServer* data, KeyRange keys) { return new SSShardInfo(keys, new AddingShard(data, keys), NULL); }
+	static SSShardInfo* addingSplitLeft( KeyRange keys, AddingShard* oldShard) { return new SSShardInfo(keys, new AddingShard(oldShard, keys), NULL); }
 
 	bool isReadable() const { return readWrite!=NULL; }
 	bool notAssigned() const { return !readWrite && !adding; }
@@ -329,7 +329,7 @@ public:
 
 	StorageServerDisk storage;
 
-	KeyRangeMap< Reference<ShardInfo> > shards;
+	KeyRangeMap< Reference<SSShardInfo> > shards;
 	uint64_t shardChangeCounter;      // max( shards->changecounter )
 
 	// newestAvailableVersion[k]
@@ -462,7 +462,7 @@ public:
 
 		newestAvailableVersion.insert(allKeys, invalidVersion);
 		newestDirtyVersion.insert(allKeys, invalidVersion);
-		addShard( ShardInfo::newNotAssigned( allKeys ) );
+		addShard( SSShardInfo::newNotAssigned( allKeys ) );
 
 		cx = openDBOnServer(db, TaskDefaultEndpoint, true, true);
 	}
@@ -471,14 +471,14 @@ public:
 	// Puts the given shard into shards.  The caller is responsible for adding shards
 	//   for all ranges in shards.getAffectedRangesAfterInsertion(newShard->keys)), because these
 	//   shards are invalidated by the call.
-	void addShard( ShardInfo* newShard ) {
+	void addShard( SSShardInfo* newShard ) {
 		ASSERT( !newShard->keys.empty() );
 		newShard->changeCounter = ++shardChangeCounter;
 		//TraceEvent("AddShard", this->thisServerID).detail("KeyBegin", printable(newShard->keys.begin)).detail("KeyEnd", printable(newShard->keys.end)).detail("State", newShard->isReadable() ? "Readable" : newShard->notAssigned() ? "NotAssigned" : "Adding").detail("Version", this->version.get());
-		/*auto affected = shards.getAffectedRangesAfterInsertion( newShard->keys, Reference<ShardInfo>() );
+		/*auto affected = shards.getAffectedRangesAfterInsertion( newShard->keys, Reference<SSShardInfo>() );
 		for(auto i = affected.begin(); i != affected.end(); ++i)
-			shards.insert( *i, Reference<ShardInfo>() );*/
-		shards.insert( newShard->keys, Reference<ShardInfo>(newShard) );
+			shards.insert( *i, Reference<SSShardInfo>() );*/
+		shards.insert( newShard->keys, Reference<SSShardInfo>(newShard) );
 	}
 	void addMutation(Version version, MutationRef const& mutation, KeyRangeRef const& shard, UpdateEagerReadInfo* eagerReads );
 	void setInitialVersion(Version ver) {
@@ -604,7 +604,7 @@ void validate(StorageServer* data, bool force = false) {
 
 			// * Old shards are erased: versionedData.atLatest() has entries (sets or clear *begins*) only for keys in readable or adding,transferred shards.
 			for(auto s = data->shards.ranges().begin(); s != data->shards.ranges().end(); ++s) {
-				ShardInfo* shard = s->value().getPtr();
+				SSShardInfo* shard = s->value().getPtr();
 				if (!shard->isInVersionedData()) {
 					if (latest.lower_bound(s->begin()) != latest.lower_bound(s->end())) {
 						TraceEvent(SevError, "VF", data->thisServerID).detail("LastValidTime", data->debug_lastValidateTime).detail("KeyBegin", printable(s->begin())).detail("KeyEnd", printable(s->end()))
@@ -1594,7 +1594,7 @@ void applyMutation( StorageServer *self, MutationRef const& m, Arena& arena, Sto
 
 }
 
-void removeDataRange( StorageServer *ss, Standalone<VersionUpdateRef> &mLV, KeyRangeMap<Reference<ShardInfo>>& shards, KeyRangeRef range ) {
+void removeDataRange( StorageServer *ss, Standalone<VersionUpdateRef> &mLV, KeyRangeMap<Reference<SSShardInfo>>& shards, KeyRangeRef range ) {
 	// modify the latest version of data to remove all sets and trim all clears to exclude range.
 	// Add a clear to mLV (mutationLog[data.getLatestVersion()]) that ensures all keys in range are removed from the disk when this latest version becomes durable
 	// mLV is also modified if necessary to ensure that split clears can be forgotten
@@ -1642,16 +1642,16 @@ void coalesceShards(StorageServer *data, KeyRangeRef keys) {
 
 	bool lastReadable = false;
 	bool lastNotAssigned = false;
-	KeyRangeMap<Reference<ShardInfo>>::Iterator lastRange;
+	KeyRangeMap<Reference<SSShardInfo>>::Iterator lastRange;
 
 	for( ; iter != iterEnd; ++iter) {
 		if( lastReadable && iter->value()->isReadable() ) {
 			KeyRange range = KeyRangeRef( lastRange->begin(), iter->end() );
-			data->addShard( ShardInfo::newReadWrite( range, data) );
+			data->addShard( SSShardInfo::newReadWrite( range, data) );
 			iter = data->shards.rangeContaining(range.begin);
 		} else if( lastNotAssigned && iter->value()->notAssigned() ) {
 			KeyRange range = KeyRangeRef( lastRange->begin(), iter->end() );
-			data->addShard( ShardInfo::newNotAssigned( range) );
+			data->addShard( SSShardInfo::newNotAssigned( range) );
 			iter = data->shards.rangeContaining(range.begin);
 		}
 
@@ -1853,8 +1853,8 @@ ACTOR Future<Void> fetchKeys( StorageServer *data, AddingShard* shard ) {
 
 						// This actor finishes committing the keys [keys.begin,nfk) that we already fetched.
 						// The remaining unfetched keys [nfk,keys.end) will become a separate AddingShard with its own fetchKeys.
-						shard->server->addShard( ShardInfo::addingSplitLeft( KeyRangeRef(keys.begin, nfk), shard ) );
-						shard->server->addShard( ShardInfo::newAdding( data, KeyRangeRef(nfk, keys.end) ) );
+						shard->server->addShard( SSShardInfo::addingSplitLeft( KeyRangeRef(keys.begin, nfk), shard ) );
+						shard->server->addShard( SSShardInfo::newAdding( data, KeyRangeRef(nfk, keys.end) ) );
 						shard = data->shards.rangeContaining( keys.begin ).value()->adding;
 						auto otherShard = data->shards.rangeContaining( nfk ).value()->adding;
 						keys = shard->keys;
@@ -1971,7 +1971,7 @@ ACTOR Future<Void> fetchKeys( StorageServer *data, AddingShard* shard ) {
 		ASSERT( data->shards[shard->keys.begin]->assigned() && data->shards[shard->keys.begin]->keys == shard->keys );  // We aren't changing whether the shard is assigned
 		data->newestAvailableVersion.insert(shard->keys, latestVersion);
 		shard->readWrite.send(Void());
-		data->addShard( ShardInfo::newReadWrite(shard->keys, data) );   // invalidates shard!
+		data->addShard( SSShardInfo::newReadWrite(shard->keys, data) );   // invalidates shard!
 		coalesceShards(data, keys);
 
 		validate(data);
@@ -2037,7 +2037,7 @@ void AddingShard::addMutation( Version version, MutationRef const& mutation ){
 	} else ASSERT(false);
 }
 
-void ShardInfo::addMutation(Version version, MutationRef const& mutation) {
+void SSShardInfo::addMutation(Version version, MutationRef const& mutation) {
 	ASSERT( (void *)this);
 	ASSERT( keys.contains( mutation.param1 ) );
 	if (adding)
@@ -2084,25 +2084,26 @@ void changeServerKeys( StorageServer* data, const KeyRangeRef& keys, bool nowAss
 		return;
 	}
 
-	// Save a backup of the ShardInfo references before we start messing with shards, in order to defer fetchKeys cancellation (and
+	// Save a backup of the SSShardInfo references before we start messing with shards, in order to defer fetchKeys cancellation (and
 	// its potential call to removeDataRange()) until shards is again valid
-	vector< Reference<ShardInfo> > oldShards;
+	vector< Reference<SSShardInfo> > oldShards;
 	auto os = data->shards.intersectingRanges(keys);
-	for(auto r = os.begin(); r != os.end(); ++r)
+	for(auto r = os.begin(); r != os.end(); ++r) {
 		oldShards.push_back( r->value() );
+	}
 
 	// As addShard (called below)'s documentation requires, reinitialize any overlapping range(s)
-	auto ranges = data->shards.getAffectedRangesAfterInsertion( keys, Reference<ShardInfo>() );  // null reference indicates the range being changed
+	auto ranges = data->shards.getAffectedRangesAfterInsertion( keys, Reference<SSShardInfo>() );  // null reference indicates the range being changed
 	for(int i=0; i<ranges.size(); i++) {
 		if (!ranges[i].value) {
 			ASSERT( (KeyRangeRef&)ranges[i] == keys ); // there shouldn't be any nulls except for the range being inserted
 		} else if (ranges[i].value->notAssigned())
-			data->addShard( ShardInfo::newNotAssigned(ranges[i]) );
+			data->addShard( SSShardInfo::newNotAssigned(ranges[i]) );
 		else if (ranges[i].value->isReadable())
-			data->addShard( ShardInfo::newReadWrite(ranges[i], data) );
+			data->addShard( SSShardInfo::newReadWrite(ranges[i], data) );
 		else {
 			ASSERT( ranges[i].value->adding );
-			data->addShard( ShardInfo::newAdding( data, ranges[i] ) );
+			data->addShard( SSShardInfo::newAdding( data, ranges[i] ) );
 			TEST( true );	// ChangeServerKeys reFetchKeys
 		}
 	}
@@ -2130,22 +2131,22 @@ void changeServerKeys( StorageServer* data, const KeyRangeRef& keys, bool nowAss
 				changeNewestAvailable.push_back(make_pair(range, version));
 				removeRanges.push_back( range );
 			}
-			data->addShard( ShardInfo::newNotAssigned(range) );
+			data->addShard( SSShardInfo::newNotAssigned(range) );
 			data->watches.triggerRange( range.begin, range.end );
 		} else if (!dataAvailable) {
 			// SOMEDAY: Avoid restarting adding/transferred shards
 			if (version==0){ // bypass fetchkeys; shard is known empty at version 0
 				changeNewestAvailable.push_back(make_pair(range, latestVersion));
-				data->addShard( ShardInfo::newReadWrite(range, data) );
+				data->addShard( SSShardInfo::newReadWrite(range, data) );
 				setAvailableStatus(data, range, true);
 			} else {
 				auto& shard = data->shards[range.begin];
 				if( !shard->assigned() || shard->keys != range )
-					data->addShard( ShardInfo::newAdding(data, range) );
+					data->addShard( SSShardInfo::newAdding(data, range) );
 			}
 		} else {
 			changeNewestAvailable.push_back(make_pair(range, latestVersion));
-			data->addShard( ShardInfo::newReadWrite(range, data) );
+			data->addShard( SSShardInfo::newReadWrite(range, data) );
 		}
 	}
 	// Update newestAvailableVersion when a shard becomes (un)available (in a separate loop to avoid invalidating vr above)
@@ -3211,7 +3212,7 @@ bool storageServerTerminated(StorageServer& self, IKeyValueStore* persistentData
 	self.shuttingDown = true;
 
 	// Clearing shards shuts down any fetchKeys actors; these may do things on cancellation that are best done with self still valid
-	self.shards.insert( allKeys, Reference<ShardInfo>() );
+	self.shards.insert( allKeys, Reference<SSShardInfo>() );
 
 	// Dispose the IKVS (destroying its data permanently) only if this shutdown is definitely permanent.  Otherwise just close it.
 	if (e.code() == error_code_worker_removed || e.code() == error_code_recruitment_failed)
