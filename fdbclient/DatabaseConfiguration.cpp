@@ -162,12 +162,12 @@ bool DatabaseConfiguration::isValid() const {
 	std::set<int> priorities;
 	dcIds.insert(Key());
 	for(auto& r : regions) {
-		if( !(!dcIds.count(r.dcId) &&
-			!priorities.count(r.priority) &&
-			r.satelliteTLogReplicationFactor >= 0 &&
-			r.satelliteTLogWriteAntiQuorum >= 0 &&
-			r.satelliteTLogUsableDcs >= 0 &&
-			( r.satelliteTLogReplicationFactor == 0 || ( r.satelliteTLogPolicy && r.satellites.size() ) ) ) ) {
+		if( dcIds.count(r.dcId) ||
+		    priorities.count(r.priority) ||
+		    r.satelliteTLogReplicationFactor < 0 ||
+		    r.satelliteTLogWriteAntiQuorum < 0 ||
+		    r.satelliteTLogUsableDcs < 0 ||
+		    ( r.satelliteTLogReplicationFactor > 0 && ( !r.satelliteTLogPolicy || !r.satellites.size() ) ) ) {
 			return false;
 		}
 		dcIds.insert(r.dcId);
