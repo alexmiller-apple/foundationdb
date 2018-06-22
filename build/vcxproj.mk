@@ -26,14 +26,14 @@ CLEAN_TARGETS += GENNAME()_clean
 GENNAME()_ALL_SOURCES := $(addprefix GENDIR/,GENSOURCES)
 
 GENNAME()_BUILD_SOURCES := $(patsubst %.actor.cpp,${OBJDIR}/%.actor.g.cpp,$(filter-out %.h %.hpp,$(GENNAME()_ALL_SOURCES)))
-GENNAME()_GENERATED_SOURCES := $(patsubst %.actor.h,%.actor.g.h,$(patsubst %.actor.cpp,${OBJDIR}/%.actor.g.cpp,$(filter %.actor.h %.actor.cpp,$(GENNAME()_ALL_SOURCES))))
+GENNAME()_GENERATED_SOURCES := $(patsubst %.actor.h,${OBJDIR}/%.actor.g.h,$(patsubst %.actor.cpp,${OBJDIR}/%.actor.g.cpp,$(filter %.actor.h %.actor.cpp,$(GENNAME()_ALL_SOURCES))))
 GENERATED_SOURCES += $(GENNAME()_GENERATED_SOURCES)
 
 -include GENDIR/local.mk
 
 # We need to include the current directory for .g.actor.cpp files emitted into
 # .objs that use includes not based at the root of fdb.
-GENNAME()_CFLAGS := -I GENDIR -I ${OBJDIR}/GENDIR ${GENNAME()_CFLAGS}
+GENNAME()_CFLAGS := -I GENDIR -I ${OBJDIR} -I ${OBJDIR}/GENDIR ${GENNAME()_CFLAGS}
 
 # If we have any static libs, we have to wrap them in the appropriate
 # compiler flag magic
@@ -63,9 +63,9 @@ $(OBJDIR)/GENDIR/%.actor.g.cpp: GENDIR/%.actor.cpp $(ACTORCOMPILER)
 	@mkdir -p $(OBJDIR)/$(<D)
 	@$(MONO) $(ACTORCOMPILER) $< $@ >/dev/null
 
-GENDIR/%.actor.g.h: GENDIR/%.actor.h $(ACTORCOMPILER)
-	@if [ -e $< ]; then echo "Actorcompiling $<" ; $(MONO) $(ACTORCOMPILER) $< $@ >/dev/null ; fi
-.PRECIOUS: $(OBJDIR)/GENDIR/%.actor.g.cpp GENDIR/%.actor.g.h
+$(OBJDIR)/GENDIR/%.actor.g.h: GENDIR/%.actor.h $(ACTORCOMPILER)
+	@if [ -e $< ]; then echo "Actorcompiling $<" ; mkdir -p $(OBJDIR)/$(<D) ; $(MONO) $(ACTORCOMPILER) $< $@ >/dev/null ; fi
+.PRECIOUS: $(OBJDIR)/GENDIR/%.actor.g.cpp $(OBJDIR)/GENDIR/%.actor.g.h
 
 # The order-only dependency on the generated .h files is to force make
 # to actor compile all headers before attempting compilation of any .c
