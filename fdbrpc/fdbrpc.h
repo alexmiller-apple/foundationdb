@@ -18,8 +18,6 @@
  * limitations under the License.
  */
 
-#include "genericactors.actor.h"
-
 #ifndef FDBRPC_FDBRPC_H
 #define FDBRPC_FDBRPC_H
 #pragma once
@@ -369,4 +367,7 @@ void load(Ar& ar, RequestStream<T>& value) {
 	value = RequestStream<T>(endpoint);
 }
 
+
+
 #endif
+#include "genericactors.actor.h"
