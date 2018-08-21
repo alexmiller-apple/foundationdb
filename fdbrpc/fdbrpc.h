@@ -372,4 +372,11 @@ void load(Ar& ar, RequestStream<T>& value) {
 
 
 #endif
-#include "genericactors.actor.h"
+#if !defined(POST_ACTOR_COMPILER)
+#  define UNDEF_THE_ACTOR_COMPILER
+#endif
+#include "genericactors.actor.g.h"
+#if defined(UNDEF_THE_ACTOR_COMPILER)
+#  undef POST_ACTOR_COMPILER
+#  undef UNDEF_THE_ACTOR_COMPILER
+#endif
