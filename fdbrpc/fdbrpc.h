@@ -26,6 +26,8 @@
 #include "FlowTransport.h" // NetworkMessageReceiver Endpoint
 #include "FailureMonitor.h"
 
+template <class T>
+void networkSender( Future<T> const& input, Endpoint const& endpoint );
 
 struct FlowReceiver : private NetworkMessageReceiver {
 	// Common endpoint code for NetSAV<> and NetNotifiedQueue<>
@@ -370,4 +372,4 @@ void load(Ar& ar, RequestStream<T>& value) {
 
 
 #endif
-#include "genericactors.actor.g.h"
+#include "genericactors.actor.h"
