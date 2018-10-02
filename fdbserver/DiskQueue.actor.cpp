@@ -953,6 +953,57 @@ private:
 		}
 	}
 
+	ACTOR static Future<Standalone<StringRef>> read(DiskQueue *self, location start, location end) {
+		// This `state` is unnecessary, but works around pagedData wrongly becoming const
+		// due to the actor compiler.
+		state Standalone<StringRef> pagedData = wait(readPages(self, start, end));
+		ASSERT(start.lo % sizeof(Page) == 0 ||
+		       start.lo % sizeof(Page) >= sizeof(PageHeader));
+		int startingOffset = start.lo % sizeof(Page);
+		if (startingOffset > 0) startingOffset -= sizeof(PageHeader);
+		ASSERT(end.lo % sizeof(Page) == 0 ||
+		       end.lo % sizeof(Page) > sizeof(PageHeader));
+		int endingOffset = end.lo % sizeof(Page);
+		if (endingOffset == 0) endingOffset = sizeof(Page);
+		if (endingOffset > 0) endingOffset -= sizeof(PageHeader);
+
+		if ((end.lo-1)/sizeof(Page)*sizeof(Page) == start.lo/sizeof(Page)*sizeof(Page)) {
+			// start and end are on the same page
+			ASSERT(pagedData.size() == sizeof(Page));
+			pagedData.contents() = pagedData.substr(sizeof(PageHeader) + startingOffset, endingOffset - startingOffset);
+			return pagedData;
+		} else {
+			Standalone<StringRef> unpagedData = makeString(pagedData.size()); //FIXME
+			uint8_t *buf = mutateString(unpagedData);
+			memset(buf, 0, unpagedData.size());
+			const Page *data = reinterpret_cast<const Page*>(pagedData.begin());
+
+			// Only start copying from `start` in the first page.
+			if( data->payloadSize > startingOffset ) {
+				memcpy(buf, data->payload+startingOffset, data->payloadSize-startingOffset);
+				buf += data->payloadSize-startingOffset;
+			}
+			data++;
+
+			// Copy all the middle pages
+			while (data->seq != ((end.lo-1)/sizeof(Page)*sizeof(Page))) {
+				// These pages can have varying amounts of data, as pages with partial
+				// data will be zero-filled when commit is called.
+				memcpy(buf, data->payload, data->payloadSize);
+				buf += data->payloadSize;
+				data++;
+			}
+
+			// Copy only until `end` in the last page.
+			// FIXME reconsider how to handle this getNextReadLocation != getLastReadLocation
+			memcpy(buf, data->payload, std::min(endingOffset, data->payloadSize));
+			buf += std::min(endingOffset, data->payloadSize);
+
+			unpagedData.contents() = unpagedData.substr(0, buf - unpagedData.begin());
+			return unpagedData;
+		}
+	}
+
 	void readFromBuffer( StringBuffer* result, int* bytes ) {
 		// extract up to bytes from readBufPage into result
 		int len = std::min( readBufPage->payloadSize - readBufPos, *bytes );
