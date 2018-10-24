@@ -198,6 +198,20 @@ bool operator != (Optional<T> const& lhs, Optional<T> const& rhs) {
 	return !(lhs == rhs);
 }
 
+// Old versions of GCC fail to recognize user-defined conversions that would
+// let the above operators work.  So instead, we offer explicit guidence to GCC
+// to recognize these cases.
+// SOMEDAY: Remove when we're willing to deprecate GCC 4.9.1
+template <class T, class U>
+bool operator == (Optional<T> const& lhs, U const& rhs) {
+	return lhs == Optional<T>(rhs);
+}
+
+template <class T, class U>
+bool operator != (Optional<T> const& lhs, U const& rhs) {
+	return lhs != Optional<T>(rhs);
+}
+
 template <class T>
 class ErrorOr {
 public:
@@ -275,6 +289,19 @@ bool operator == (ErrorOr<T> const& lhs, ErrorOr<T> const& rhs) {
 template <typename T>
 bool operator != (ErrorOr<T> const& lhs, ErrorOr<T> const& rhs) {
 	return !(lhs == rhs);
+}
+
+// Old versions of GCC fail to recognize user-defined conversions that would
+// let the above operators work.  So instead, we offer explicit guidence to GCC
+// to recognize these cases.
+// SOMEDAY: Remove when we're willing to deprecate GCC 4.9.1
+template <class T, class U>
+bool operator == (ErrorOr<T> const& lhs, U const& rhs) {
+	return lhs == ErrorOr<T>(rhs);
+}
+template <class T, class U>
+bool operator != (ErrorOr<T> const& lhs, U const& rhs) {
+	return lhs != ErrorOr<T>(rhs);
 }
 
 template <typename T>
