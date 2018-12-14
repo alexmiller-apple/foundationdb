@@ -167,7 +167,6 @@ def run_simulation_test(basedir,
     if buggify:
         pargs.append('-b')
         pargs.append('on')
-    pargs.append('--knob_trace_format=json')
     test_dir = td.get_current_test_dir()
     if seed is not None:
         pargs.append('-s')
