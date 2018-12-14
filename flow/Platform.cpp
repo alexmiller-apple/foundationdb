@@ -88,6 +88,7 @@
 #include "flow/stacktrace.h"
 
 #ifdef __linux__
+#include <sys/sysmacros.h>
 /* Needed for memory allocation */
 #include <linux/mman.h>
 /* Needed for processor affinity */
