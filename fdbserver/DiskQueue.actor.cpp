@@ -1041,39 +1041,14 @@ private:
 	void findPhysicalLocation( loc_t loc, int* file, int64_t* page, const char* context ) {
 		bool ok = false;
 
-		TraceEvent(SevInfo, "FindPhysicalLocation", dbgid)
-				.detail("Page0Valid", firstPages(0).checkHash())
-				.detail("Page0Seq", firstPages(0).seq)
-				.detail("Page1Valid", firstPages(1).checkHash())
-				.detail("Page1Seq", firstPages(1).seq)
-				.detail("Location", loc)
-				.detail("Context", context)
-				.detail("File0Name", rawQueue->files[0].dbgFilename);
-
 		for(int i = 1; i >= 0; i--)
 			if ( firstPages(i).checkHash() && firstPages(i).seq <= (size_t)loc ) {
 				*file = i;
 				*page = (loc - firstPages(i).seq)/sizeof(Page);
-				TraceEvent("FoundPhysicalLocation", dbgid)
-					.detail("PageIndex", i)
-					.detail("PageLocation", *page)
-					.detail("SizeofPage", sizeof(Page))
-					.detail("PageSequence", firstPages(i).seq)
-					.detail("Location", loc)
-					.detail("Context", context)
-					.detail("File0Name", rawQueue->files[0].dbgFilename);
 				ok = true;
 				break;
 			}
 		if (!ok)
-			TraceEvent(SevError, "DiskQueueLocationError", dbgid)
-				.detail("Page0Valid", firstPages(0).checkHash())
-				.detail("Page0Seq", firstPages(0).seq)
-				.detail("Page1Valid", firstPages(1).checkHash())
-				.detail("Page1Seq", firstPages(1).seq)
-				.detail("Location", loc)
-				.detail("Context", context)
-				.detail("File0Name", rawQueue->files[0].dbgFilename);
 		ASSERT( ok );
 	}
 
