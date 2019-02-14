@@ -4,6 +4,7 @@ services:
   common: &common
     image: foundationdb/foundationdb-build:0.0.5
 
+
   build-setup: &build-setup
     <<: *common
     depends_on: [common]

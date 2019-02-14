@@ -19,21 +19,23 @@
  */
 
 
-#include "Trace.h"
-#include "FileTraceLogWriter.h"
-#include "XmlTraceLogFormatter.h"
-#include "flow.h"
-#include "DeterministicRandom.h"
+#include "flow/Trace.h"
+#include "flow/FileTraceLogWriter.h"
+#include "flow/XmlTraceLogFormatter.h"
+#include "flow/JsonTraceLogFormatter.h"
+#include "flow/flow.h"
+#include "flow/DeterministicRandom.h"
 #include <stdlib.h>
 #include <stdarg.h>
+#include <cctype>
 #include <time.h>
 
-#include "IThreadPool.h"
-#include "ThreadHelper.actor.h"
-#include "FastRef.h"
-#include "EventTypes.actor.h"
-#include "TDMetric.actor.h"
-#include "MetricSample.h"
+#include "flow/IThreadPool.h"
+#include "flow/ThreadHelper.actor.h"
+#include "flow/FastRef.h"
+#include "flow/EventTypes.actor.h"
+#include "flow/TDMetric.actor.h"
+#include "flow/MetricSample.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -122,10 +124,10 @@ static int TRACE_LOG_MAX_PREOPEN_BUFFER = 1000000;
 static int TRACE_EVENT_MAX_SIZE = 4000;
 
 struct TraceLog {
+	Reference<ITraceLogFormatter> formatter;
 
 private:
 	Reference<ITraceLogWriter> logWriter;
-	Reference<ITraceLogFormatter> formatter;
 	std::vector<TraceEventFields> eventBuffer;
 	int loggedLength;
 	int bufferLength;
@@ -561,6 +563,42 @@ TraceEventFields LatestEventCache::getLatestError() {
 }
 
 static TraceLog g_traceLog;
+
+namespace {
+template <bool validate>
+bool traceFormatImpl(std::string& format) {
+	std::transform(format.begin(), format.end(), format.begin(), ::tolower);
+	if (format == "xml") {
+		if (!validate) {
+			g_traceLog.formatter = Reference<ITraceLogFormatter>(new XmlTraceLogFormatter());
+		}
+		return true;
+	} else if (format == "json") {
+		if (!validate) {
+			g_traceLog.formatter = Reference<ITraceLogFormatter>(new JsonTraceLogFormatter());
+		}
+		return true;
+	} else {
+		if (!validate) {
+			g_traceLog.formatter = Reference<ITraceLogFormatter>(new XmlTraceLogFormatter());
+		}
+		return false;
+	}
+}
+} // namespace
+
+bool selectTraceFormatter(std::string format) {
+	ASSERT(!g_traceLog.isOpen());
+	bool recognized = traceFormatImpl</*validate*/ false>(format);
+	if (!recognized) {
+		TraceEvent(SevWarnAlways, "UnrecognizedTraceFormat").detail("format", format);
+	}
+	return recognized;
+}
+
+bool validateTraceFormat(std::string format) {
+	return traceFormatImpl</*validate*/ true>(format);
+}
 
 ThreadFuture<Void> flushTraceFile() {
 	if (!g_traceLog.isOpen())

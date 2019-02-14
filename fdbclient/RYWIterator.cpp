@@ -18,8 +18,8 @@
  * limitations under the License.
  */
 
-#include "RYWIterator.h"
-#include "KeyRangeMap.h"
+#include "fdbclient/RYWIterator.h"
+#include "fdbclient/KeyRangeMap.h"
 #include "flow/UnitTest.h"
 
 const RYWIterator::SEGMENT_TYPE RYWIterator::typeMap[12] = { 
@@ -48,16 +48,24 @@ bool RYWIterator::is_unreadable() { return writes.is_unreadable(); }
 ExtStringRef RYWIterator::beginKey() { return begin_key_cmp <= 0 ? writes.beginKey() : cache.beginKey(); }
 ExtStringRef RYWIterator::endKey() { return end_key_cmp <= 0 ? cache.endKey() : writes.endKey(); }
 
-KeyValueRef const& RYWIterator::kv( Arena& arena ) {
+const KeyValueRef* RYWIterator::kv(Arena& arena) {
 	if(is_unreadable())
 		throw accessed_unreadable();
-	
-	if (writes.is_unmodified_range())
+
+	if (writes.is_unmodified_range()) {
 		return cache.kv( arena );
-	else if (writes.is_independent() || cache.is_empty_range())
-		return temp = KeyValueRef( writes.beginKey().assertRef(), WriteMap::coalesceUnder( writes.op(), Optional<ValueRef>(), arena ).value.get() );
-	else
-		return temp = KeyValueRef( writes.beginKey().assertRef(), WriteMap::coalesceUnder( writes.op(), cache.kv(arena).value, arena ).value.get() );
+	}
+
+	auto result = (writes.is_independent() || cache.is_empty_range())
+	                  ? WriteMap::coalesceUnder(writes.op(), Optional<ValueRef>(), arena)
+	                  : WriteMap::coalesceUnder(writes.op(), cache.kv(arena)->value, arena);
+
+	if (!result.value.present()) {
+		// Key is now deleted, which can happen because of CompareAndClear.
+		return nullptr;
+	}
+	temp = KeyValueRef(writes.beginKey().assertRef(), result.value.get());
+	return &temp;
 }
 
 RYWIterator& RYWIterator::operator++() {
@@ -208,7 +216,11 @@ void testSnapshotCache() {
 	RYWIterator it(&cache, &writes);
 	it.skip(searchKeys.begin);
 	while (true) {
-		fprintf(stderr, "b: '%s' e: '%s' type: %s value: '%s'\n", printable(it.beginKey().toStandaloneStringRef()).c_str(), printable(it.endKey().toStandaloneStringRef()).c_str(), it.is_empty_range() ? "empty" : ( it.is_kv() ? "keyvalue" : "unknown" ), it.is_kv() ? printable(it.kv(arena).value).c_str() : "");
+		fprintf(stderr, "b: '%s' e: '%s' type: %s value: '%s'\n",
+		        printable(it.beginKey().toStandaloneStringRef()).c_str(),
+		        printable(it.endKey().toStandaloneStringRef()).c_str(),
+		        it.is_empty_range() ? "empty" : (it.is_kv() ? "keyvalue" : "unknown"),
+		        it.is_kv() ? printable(it.kv(arena)->value).c_str() : "");
 		if (it.endKey() >= searchKeys.end) break;
 		++it;
 	}
@@ -216,7 +228,11 @@ void testSnapshotCache() {
 
 	it.skip(searchKeys.end);
 	while (true) {
-		fprintf(stderr, "b: '%s' e: '%s' type: %s value: '%s'\n", printable(it.beginKey().toStandaloneStringRef()).c_str(), printable(it.endKey().toStandaloneStringRef()).c_str(), it.is_empty_range() ? "empty" : ( it.is_kv() ? "keyvalue" : "unknown" ), it.is_kv() ? printable(it.kv(arena).value).c_str() : "" );
+		fprintf(stderr, "b: '%s' e: '%s' type: %s value: '%s'\n",
+		        printable(it.beginKey().toStandaloneStringRef()).c_str(),
+		        printable(it.endKey().toStandaloneStringRef()).c_str(),
+		        it.is_empty_range() ? "empty" : (it.is_kv() ? "keyvalue" : "unknown"),
+		        it.is_kv() ? printable(it.kv(arena)->value).c_str() : "");
 		if (it.beginKey() <= searchKeys.begin) break;
 		--it;
 	}
@@ -354,7 +370,7 @@ static int getWriteMapCount(WriteMap *p) {
 	return count;
 }
 
-TEST_CASE("fdbclient/WriteMap/emptiness") {
+TEST_CASE("/fdbclient/WriteMap/emptiness") {
 	Arena arena = Arena();
 	WriteMap writes = WriteMap(&arena);
 	ASSERT(writes.empty());
@@ -363,7 +379,7 @@ TEST_CASE("fdbclient/WriteMap/emptiness") {
 	return Void();
 }
 
-TEST_CASE("fdbclient/WriteMap/clear") {
+TEST_CASE("/fdbclient/WriteMap/clear") {
 	Arena arena = Arena();
 	WriteMap writes = WriteMap(&arena);
 	ASSERT(writes.empty());
@@ -380,7 +396,7 @@ TEST_CASE("fdbclient/WriteMap/clear") {
 	return Void();
 }
 
-TEST_CASE("fdbclient/WriteMap/setVersionstampedKey") {
+TEST_CASE("/fdbclient/WriteMap/setVersionstampedKey") {
 	Arena arena = Arena();
 	WriteMap writes = WriteMap(&arena);
 	ASSERT(writes.empty());
@@ -453,7 +469,7 @@ TEST_CASE("fdbclient/WriteMap/setVersionstampedKey") {
 	return Void();
 }
 
-TEST_CASE("fdbclient/WriteMap/setVersionstampedValue") {
+TEST_CASE("/fdbclient/WriteMap/setVersionstampedValue") {
 	Arena arena = Arena();
 	WriteMap writes = WriteMap(&arena);
 	ASSERT(writes.empty());
@@ -526,7 +542,7 @@ TEST_CASE("fdbclient/WriteMap/setVersionstampedValue") {
 	return Void();
 }
 
-TEST_CASE("fdbclient/WriteMap/addValue") {
+TEST_CASE("/fdbclient/WriteMap/addValue") {
 	Arena arena = Arena();
 	WriteMap writes = WriteMap(&arena);
 	ASSERT(writes.empty());
@@ -541,7 +557,7 @@ TEST_CASE("fdbclient/WriteMap/addValue") {
 	return Void();
 }
 
-TEST_CASE("fdbclient/WriteMap/random") {
+TEST_CASE("/fdbclient/WriteMap/random") {
 	Arena arena = Arena();
 	WriteMap writes = WriteMap(&arena);
 	ASSERT(writes.empty());

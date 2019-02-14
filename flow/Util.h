@@ -1,5 +1,5 @@
 /*
- * FutureDatabase.java
+ * Util.h
  *
  * This source file is part of the FoundationDB open source project
  *
@@ -18,23 +18,20 @@
  * limitations under the License.
  */
 
-package com.apple.foundationdb;
+#ifndef _FLOW_UTIL_H_
+#define _FLOW_UTIL_H_
+#pragma once
 
-import java.util.concurrent.Executor;
+#include <algorithm>
 
-class FutureDatabase extends NativeFuture<Database> {
-	private final Executor executor;
-
-	FutureDatabase(long cPtr, Executor executor) {
-		super(cPtr);
-		this.executor = executor;
-		registerMarshalCallback(executor);
+template <typename C>
+void swapAndPop(C* container, int index) {
+	if (index != container->size()-1) {
+		using std::swap;
+		swap((*container)[index], container->back());
 	}
 
-	@Override
-	protected Database getIfDone_internal(long cPtr) throws FDBException {
-		return new FDBDatabase(FutureDatabase_get(cPtr), executor);
-	}
-
-	private native long FutureDatabase_get(long cPtr) throws FDBException;
+	container->pop_back();
 }
+
+#endif  // _FLOW_UTIL_H_

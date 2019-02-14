@@ -1,5 +1,5 @@
 /*
- * FutureCluster.java
+ * unactorcompiler.h
  *
  * This source file is part of the FoundationDB open source project
  *
@@ -18,23 +18,17 @@
  * limitations under the License.
  */
 
-package com.apple.foundationdb;
+#ifndef POST_ACTOR_COMPILER
 
-import java.util.concurrent.Executor;
+#ifndef NO_INTELLISENSE
+#undef ACTOR
+#undef DESCR
+#undef state
+#undef UNCANCELLABLE
+#undef choose
+#undef when
+#endif
 
-class FutureCluster extends NativeFuture<Cluster> {
-	private final Executor executor;
+#endif
 
-	protected FutureCluster(long cPtr, Executor executor) {
-		super(cPtr);
-		this.executor = executor;
-		registerMarshalCallback(executor);
-	}
-
-	@Override
-	protected Cluster getIfDone_internal(long cPtr) throws FDBException {
-		return new Cluster(FutureCluster_get(cPtr), executor);
-	}
-
-	private native long FutureCluster_get(long cPtr) throws FDBException;
-}
+// loop is still defined

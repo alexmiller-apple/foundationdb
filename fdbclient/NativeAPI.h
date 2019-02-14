@@ -24,12 +24,12 @@
 
 #include "flow/flow.h"
 #include "flow/TDMetric.actor.h"
-#include "FDBTypes.h"
-#include "MasterProxyInterface.h"
-#include "FDBOptions.g.h"
-#include "CoordinationInterface.h"
-#include "ClusterInterface.h"
-#include "ClientLogEvents.h"
+#include "fdbclient/FDBTypes.h"
+#include "fdbclient/MasterProxyInterface.h"
+#include "fdbclient/FDBOptions.g.h"
+#include "fdbclient/CoordinationInterface.h"
+#include "fdbclient/ClusterInterface.h"
+#include "fdbclient/ClientLogEvents.h"
 
 // Incomplete types that are reference counted
 class DatabaseContext;
@@ -47,19 +47,25 @@ struct NetworkOptions {
 	uint64_t traceRollSize;
 	uint64_t traceMaxLogsSize;	
 	std::string traceLogGroup;
+	std::string traceFormat;
 	Optional<bool> logClientInfo;
 	Standalone<VectorRef<ClientVersionRef>> supportedVersions;
 	bool slowTaskProfilingEnabled;
 
 	// The default values, TRACE_DEFAULT_ROLL_SIZE and TRACE_DEFAULT_MAX_LOGS_SIZE are located in Trace.h.
-	NetworkOptions() : localAddress(""), clusterFile(""), traceDirectory(Optional<std::string>()), traceRollSize(TRACE_DEFAULT_ROLL_SIZE), traceMaxLogsSize(TRACE_DEFAULT_MAX_LOGS_SIZE), traceLogGroup("default"),
-	                   slowTaskProfilingEnabled(false)
-	{ }
+	NetworkOptions()
+	  : localAddress(""), clusterFile(""), traceDirectory(Optional<std::string>()),
+	    traceRollSize(TRACE_DEFAULT_ROLL_SIZE), traceMaxLogsSize(TRACE_DEFAULT_MAX_LOGS_SIZE), traceLogGroup("default"),
+	    traceFormat("xml"), slowTaskProfilingEnabled(false) {}
 };
-
 
 class Database {
 public:
+	enum { API_VERSION_LATEST = -1 };
+
+	static Database createDatabase( Reference<ClusterConnectionFile> connFile, int apiVersion, LocalityData const& clientLocality=LocalityData() );
+	static Database createDatabase( std::string connFileName, int apiVersion, LocalityData const& clientLocality=LocalityData() ); 
+
 	Database() {}  // an uninitialized database can be destructed or reassigned safely; that's it
 	void operator= ( Database const& rhs ) { db = rhs.db; }
 	Database( Database const& rhs ) : db(rhs.db) {}
@@ -70,6 +76,7 @@ public:
 	explicit Database(Reference<DatabaseContext> cx) : db(cx) {}
 	explicit Database( DatabaseContext* cx ) : db(cx) {}
 	inline DatabaseContext* getPtr() const { return db.getPtr(); }
+	inline DatabaseContext* extractPtr() { return db.extractPtr(); }
 	DatabaseContext* operator->() const { return db.getPtr(); }
 
 private:
@@ -103,40 +110,25 @@ void stopNetwork();
  */
 class Cluster : public ReferenceCounted<Cluster>, NonCopyable {
 public:
-	enum { API_VERSION_LATEST = -1 };
-	// Constructs a  Cluster.  This uses the global networking enging configured in setupNetwork()
-	// apiVersion may be set to API_VERSION_LATEST 
-	static Reference<Cluster> createCluster( Reference<ClusterConnectionFile> connFile, int apiVersion );
-	static Reference<Cluster> createCluster(std::string connFileName, int apiVersion);
-
-	// See DatabaseContext::createDatabase
-	Future<Database> createDatabase( Standalone<StringRef> dbName, LocalityData locality = LocalityData() );
-
-	void setOption(FDBClusterOptions::Option option, Optional<StringRef> value);
-
-	Reference<ClusterConnectionFile> getConnectionFile() { return connectionFile; }
+	Cluster(Reference<ClusterConnectionFile> connFile, int apiVersion=Database::API_VERSION_LATEST);
+	Cluster(Reference<ClusterConnectionFile> connFile, Reference<AsyncVar<Optional<struct ClusterInterface>>> clusterInterface);
 
 	~Cluster();
 
-	int apiVersionAtLeast(int minVersion) { return apiVersion < 0 || apiVersion >= minVersion; }
+	Reference<AsyncVar<Optional<struct ClusterInterface>>> getClusterInterface();
+	Reference<ClusterConnectionFile> getConnectionFile() { return connectionFile; }
 
-	Future<Void> onConnected(); // Returns after a majority of coordination servers are available and have reported a leader. The cluster file therefore is valid, but the database might be unavailable.
+	Future<Void> onConnected();
 
-	Error deferred_error;
-
-	void checkDeferredError() { if (deferred_error.code() != invalid_error_code) throw deferred_error; }
-
-private: friend class ThreadSafeCluster;
-		 friend class AtomicOpsApiCorrectnessWorkload; // This is just for testing purposes. It needs to change apiVersion
-		 friend class AtomicOpsWorkload; // This is just for testing purposes. It needs to change apiVersion
-		 friend class VersionStampWorkload; // This is just for testing purposes. It needs to change apiVersion
-
-	Cluster( Reference<ClusterConnectionFile> connFile, int apiVersion = API_VERSION_LATEST );
+private: 
+	void init(Reference<ClusterConnectionFile> connFile, bool startClientInfoMonitor, int apiVersion=Database::API_VERSION_LATEST);
 
 	Reference<AsyncVar<Optional<struct ClusterInterface>>> clusterInterface;
-	Future<Void> leaderMon, failMon, connected;
 	Reference<ClusterConnectionFile> connectionFile;
-	int apiVersion;
+
+	Future<Void> leaderMon;
+	Future<Void> failMon;
+	Future<Void> connected;
 };
 
 struct StorageMetrics;

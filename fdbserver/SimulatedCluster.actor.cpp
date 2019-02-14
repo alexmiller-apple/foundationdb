@@ -19,15 +19,14 @@
  */
 
 #include <fstream>
-#include "flow/actorcompiler.h"
 #include "fdbrpc/simulator.h"
 #include "fdbclient/FailureMonitorClient.h"
 #include "fdbclient/DatabaseContext.h"
-#include "TesterInterface.h"
-#include "WorkerInterface.h"
+#include "fdbserver/TesterInterface.h"
+#include "fdbserver/WorkerInterface.h"
 #include "fdbclient/ClusterInterface.h"
-#include "Knobs.h"
-#include "ClusterRecruitmentInterface.h"
+#include "fdbserver/Knobs.h"
+#include "fdbserver/ClusterRecruitmentInterface.h"
 #include "fdbserver/CoordinationInterface.h"
 #include "fdbmonitor/SimpleIni.h"
 #include "fdbrpc/AsyncFileNonDurable.actor.h"
@@ -35,10 +34,10 @@
 #include "fdbclient/ManagementAPI.h"
 #include "fdbclient/NativeAPI.h"
 #include "fdbclient/BackupAgent.h"
-
-#ifndef WIN32
+#if defined(CMAKE_BUILD) || !defined(WIN32)
 #include "versions.h"
 #endif
+#include "flow/actorcompiler.h"  // This must be the last #include.
 
 #undef max
 #undef min
@@ -127,19 +126,18 @@ ACTOR Future<Void> runBackup( Reference<ClusterConnectionFile> connFile ) {
 	state std::vector<Future<Void>> agentFutures;
 
 	while (g_simulator.backupAgents == ISimulator::WaitForType) {
-		Void _ = wait(delay(1.0));
+		wait(delay(1.0));
 	}
 
 	if (g_simulator.backupAgents == ISimulator::BackupToFile) {
-		Reference<Cluster> cluster = Cluster::createCluster(connFile, -1);
-		Database cx = cluster->createDatabase(LiteralStringRef("DB")).get();
+		Database cx = Database::createDatabase(connFile, -1);
 
 		state FileBackupAgent fileAgent;
 		state double backupPollDelay = 1.0 / CLIENT_KNOBS->BACKUP_AGGREGATE_POLL_RATE;
 		agentFutures.push_back(fileAgent.run(cx, &backupPollDelay, CLIENT_KNOBS->SIM_BACKUP_TASKS_PER_AGENT));
 
 		while (g_simulator.backupAgents == ISimulator::BackupToFile) {
-			Void _ = wait(delay(1.0));
+			wait(delay(1.0));
 		}
 
 		for(auto it : agentFutures) {
@@ -147,7 +145,7 @@ ACTOR Future<Void> runBackup( Reference<ClusterConnectionFile> connFile ) {
 		}
 	}
 
-	Void _= wait(Future<Void>(Never()));
+	wait(Future<Void>(Never()));
 	throw internal_error();
 }
 
@@ -155,16 +153,14 @@ ACTOR Future<Void> runDr( Reference<ClusterConnectionFile> connFile ) {
 	state std::vector<Future<Void>> agentFutures;
 
 	while (g_simulator.drAgents == ISimulator::WaitForType) {
-		Void _ = wait(delay(1.0));
+		wait(delay(1.0));
 	}
 
 	if (g_simulator.drAgents == ISimulator::BackupToDB) {
-		Reference<Cluster> cluster = Cluster::createCluster(connFile, -1);
-		Database cx = cluster->createDatabase(LiteralStringRef("DB")).get();
+		Database cx = Database::createDatabase(connFile, -1);
 
 		Reference<ClusterConnectionFile> extraFile(new ClusterConnectionFile(*g_simulator.extraDB));
-		Reference<Cluster> extraCluster = Cluster::createCluster(extraFile, -1);
-		state Database extraDB = extraCluster->createDatabase(LiteralStringRef("DB")).get();
+		state Database extraDB = Database::createDatabase(extraFile, -1);
 
 		TraceEvent("StartingDrAgents").detail("ConnFile", connFile->getConnectionString().toString()).detail("ExtraString", extraFile->getConnectionString().toString());
 
@@ -178,7 +174,7 @@ ACTOR Future<Void> runDr( Reference<ClusterConnectionFile> connFile ) {
 		agentFutures.push_back(dbAgent.run(extraDB, &dr2PollDelay, CLIENT_KNOBS->SIM_BACKUP_TASKS_PER_AGENT));
 
 		while (g_simulator.drAgents == ISimulator::BackupToDB) {
-			Void _ = wait(delay(1.0));
+			wait(delay(1.0));
 		}
 
 		TraceEvent("StoppingDrAgents");
@@ -188,7 +184,7 @@ ACTOR Future<Void> runDr( Reference<ClusterConnectionFile> connFile ) {
 		}
 	}
 
-	Void _= wait(Future<Void>(Never()));
+	wait(Future<Void>(Never()));
 	throw internal_error();
 }
 
@@ -222,10 +218,10 @@ ACTOR Future<ISimulator::KillType> simulatedFDBDRebooter(
 			.detailext("ZoneId", localities.zoneId())
 			.detail("WaitTime", waitTime).detail("Port", port);
 
-		Void _ = wait( delay( waitTime ) );
+		wait( delay( waitTime ) );
 
 		state ISimulator::ProcessInfo *process =  g_simulator.newProcess( "Server", ip, port, localities, processClass, dataFolder->c_str(), coordFolder->c_str() );
-		Void _ = wait( g_simulator.onProcess(process, TaskDefaultYield) );	// Now switch execution to the process on which we will run
+		wait( g_simulator.onProcess(process, TaskDefaultYield) );	// Now switch execution to the process on which we will run
 		state Future<ISimulator::KillType> onShutdown = process->onShutdown();
 
 		try {
@@ -260,7 +256,7 @@ ACTOR Future<ISimulator::KillType> simulatedFDBDRebooter(
 				Future<Void> backup = runBackupAgents ? runBackup(connFile) : Future<Void>(Never());
 				Future<Void> dr = runBackupAgents ? runDr(connFile) : Future<Void>(Never());
 
-				Void _ = wait(listen || fd || success(onShutdown) || backup || dr);
+				wait(listen || fd || success(onShutdown) || backup || dr);
 			} catch (Error& e) {
 				// If in simulation, if we make it here with an error other than io_timeout but enASIOTimedOut is set then somewhere an io_timeout was converted to a different error.
 				if(g_network->isSimulated() && e.code() != error_code_io_timeout && (bool)g_network->global(INetwork::enASIOTimedOut))
@@ -297,9 +293,9 @@ ACTOR Future<ISimulator::KillType> simulatedFDBDRebooter(
 			.detail("Excluded", process->excluded)
 			.detail("Rebooting", process->rebooting)
 			.detailext("ZoneId", localities.zoneId());
-		Void _ = wait( g_simulator.onProcess( simProcess ) );
+		wait( g_simulator.onProcess( simProcess ) );
 
-		Void _ = wait(delay(0.00001 + FLOW_KNOBS->MAX_BUGGIFIED_DELAY));  // One last chance for the process to clean up?
+		wait(delay(0.00001 + FLOW_KNOBS->MAX_BUGGIFIED_DELAY));  // One last chance for the process to clean up?
 
 		g_simulator.destroyProcess( process );  // Leak memory here; the process may be used in other parts of the simulation
 
@@ -382,15 +378,15 @@ ACTOR Future<Void> simulatedMachine(
 
 		for (int i = 0; i < ips.size(); i++) {
 			if (restarting) {
-				myFolders.push_back( ini.GetValue(printable(localities.zoneId()).c_str(), format("%d", i).c_str(), joinPath(baseFolder, g_random->randomUniqueID().toString()).c_str()) );
+				myFolders.push_back( ini.GetValue(printable(localities.machineId()).c_str(), format("%d", i).c_str(), joinPath(baseFolder, g_random->randomUniqueID().toString()).c_str()) );
 
 				if(i == 0) {
-					std::string coordinationFolder = ini.GetValue(printable(localities.zoneId()).c_str(), "coordinationFolder", "");
+					std::string coordinationFolder = ini.GetValue(printable(localities.machineId()).c_str(), "coordinationFolder", "");
 					if(!coordinationFolder.size())
-						coordinationFolder = ini.GetValue(printable(localities.zoneId()).c_str(), format("c%d", i).c_str(), joinPath(baseFolder, g_random->randomUniqueID().toString()).c_str());
+						coordinationFolder = ini.GetValue(printable(localities.machineId()).c_str(), format("c%d", i).c_str(), joinPath(baseFolder, g_random->randomUniqueID().toString()).c_str());
 					coordFolders.push_back(coordinationFolder);
 				} else {
-					coordFolders.push_back( ini.GetValue(printable(localities.zoneId()).c_str(), format("c%d", i).c_str(), joinPath(baseFolder, g_random->randomUniqueID().toString()).c_str()) );
+					coordFolders.push_back( ini.GetValue(printable(localities.machineId()).c_str(), format("c%d", i).c_str(), joinPath(baseFolder, g_random->randomUniqueID().toString()).c_str()) );
 				}
 			}
 			else {
@@ -432,7 +428,7 @@ ACTOR Future<Void> simulatedMachine(
 				.detailext("DataHall", localities.dataHallId())
 				.detail("Locality", localities.toString());
 
-			Void _ = wait( waitForAll( processes ) );
+			wait( waitForAll( processes ) );
 
 			TraceEvent("SimulatedMachineRebootStart", randomId)
 				.detail("Folder0", myFolders[0])
@@ -442,7 +438,7 @@ ACTOR Future<Void> simulatedMachine(
 				.detailext("DataHall", localities.dataHallId());
 
 			//Kill all open files, which may cause them to write invalid data.
-			auto& machineCache = g_simulator.getMachineById(localities.zoneId())->openFiles;
+			auto& machineCache = g_simulator.getMachineById(localities.machineId())->openFiles;
 
 			//Copy the file pointers to a vector because the map may be modified while we are killing files
 			std::vector<AsyncFileNonDurable*> files;
@@ -455,18 +451,18 @@ ACTOR Future<Void> simulatedMachine(
 			for(auto fileItr = files.begin(); fileItr != files.end(); ++fileItr)
 				killFutures.push_back((*fileItr)->kill());
 
-			Void _ = wait( waitForAll( killFutures ) );
+			wait( waitForAll( killFutures ) );
 
 			state std::set<std::string> filenames;
 			state std::string closingStr;
-			auto& machineCache = g_simulator.getMachineById(localities.zoneId())->openFiles;
+			auto& machineCache = g_simulator.getMachineById(localities.machineId())->openFiles;
 			for( auto it : machineCache ) {
 				filenames.insert( it.first );
 				closingStr += it.first + ", ";
 				ASSERT( it.second.isReady() && !it.second.isError() );
 			}
 
-			for( auto it : g_simulator.getMachineById(localities.zoneId())->deletingFiles ) {
+			for( auto it : g_simulator.getMachineById(localities.machineId())->deletingFiles ) {
 				filenames.insert( it );
 				closingStr += it + ", ";
 			}
@@ -479,9 +475,9 @@ ACTOR Future<Void> simulatedMachine(
 				.detailext("ZoneId", localities.zoneId())
 				.detailext("DataHall", localities.dataHallId());
 
-			ISimulator::MachineInfo* machine = g_simulator.getMachineById(localities.zoneId());
+			ISimulator::MachineInfo* machine = g_simulator.getMachineById(localities.machineId());
 			machine->closingFiles = filenames;
-			g_simulator.getMachineById(localities.zoneId())->openFiles.clear();
+			g_simulator.getMachineById(localities.machineId())->openFiles.clear();
 
 			// During a reboot:
 			//   The process is expected to close all files and be inactive in zero time, but not necessarily
@@ -491,7 +487,7 @@ ACTOR Future<Void> simulatedMachine(
 			state int shutdownDelayCount = 0;
 			state double backoff = 0;
 			loop {
-				auto& machineCache = g_simulator.getMachineById(localities.zoneId())->closingFiles;
+				auto& machineCache = g_simulator.getMachineById(localities.machineId())->closingFiles;
 
 				if( !machineCache.empty() ) {
 					std::string openFiles;
@@ -512,7 +508,7 @@ ACTOR Future<Void> simulatedMachine(
 					ASSERT( false );
 				}
 
-				Void _ = wait( delay( backoff ) );
+				wait( delay( backoff ) );
 				backoff = std::min( backoff + 1.0, 6.0 );
 			}
 
@@ -521,7 +517,7 @@ ACTOR Future<Void> simulatedMachine(
 				.detailext("ZoneId", localities.zoneId())
 				.detailext("DataHall", localities.dataHallId());
 
-			g_simulator.destroyMachine(localities.zoneId());
+			g_simulator.destroyMachine(localities.machineId());
 
 			// SOMEDAY: when processes can be rebooted, this check will be needed
 			//ASSERT( this machine is rebooting );
@@ -547,7 +543,7 @@ ACTOR Future<Void> simulatedMachine(
 				.detailext("DataHall", localities.dataHallId())
 				.detail("MachineIPs", toIPVectorString(ips));
 
-			Void _ = wait( delay( rebootTime ) );
+			wait( delay( rebootTime ) );
 
 			if( swap ) {
 				auto& avail = availableFolders[localities.dcId()];
@@ -588,7 +584,7 @@ ACTOR Future<Void> simulatedMachine(
 			//this machine is rebooting = false;
 		}
 	} catch( Error &e ) {
-		g_simulator.getMachineById(localities.zoneId())->openFiles.clear();
+		g_simulator.getMachineById(localities.machineId())->openFiles.clear();
 		throw;
 	}
 }
@@ -622,26 +618,35 @@ ACTOR Future<Void> restartSimulatedSystem(
 		std::vector<std::string> dcIds;
 		for( int i = 0; i < machineCount; i++) {
 			Optional<Standalone<StringRef>> dcUID;
-			std::string zoneIdString = ini.GetValue("META", format("%d", i).c_str());
-			Standalone<StringRef> zoneId = StringRef(zoneIdString);
-			std::string	dcUIDini = ini.GetValue(zoneIdString.c_str(), "dcUID");
-			
+			Optional<Standalone<StringRef>> zoneId;
+			std::string machineIdString = ini.GetValue("META", format("%d", i).c_str());
+			Standalone<StringRef> machineId = StringRef(machineIdString);
+
+			std::string	dcUIDini = ini.GetValue(machineIdString.c_str(), "dcUID");
 			if (!dcUIDini.empty()) {
 				dcUID = StringRef(dcUIDini);
 			}
-			ProcessClass processClass = ProcessClass((ProcessClass::ClassType)atoi(ini.GetValue(zoneIdString.c_str(), "mClass")), ProcessClass::CommandLineSource);
+
+			auto zoneIDini = ini.GetValue(machineIdString.c_str(), "zoneId");
+			if( zoneIDini == NULL ) {
+				zoneId = machineId;
+			} else {
+				zoneId = StringRef(zoneIDini);
+			}
+
+			ProcessClass processClass = ProcessClass((ProcessClass::ClassType)atoi(ini.GetValue(machineIdString.c_str(), "mClass")), ProcessClass::CommandLineSource);
 			if(processClass != ProcessClass::TesterClass) {
 				dcIds.push_back(dcUIDini);
 			}
 
 			std::vector<uint32_t> ipAddrs;
-			int processes = atoi(ini.GetValue(zoneIdString.c_str(), "processes"));
+			int processes = atoi(ini.GetValue(machineIdString.c_str(), "processes"));
 
-			auto ip = ini.GetValue(zoneIdString.c_str(), "ipAddr");
+			auto ip = ini.GetValue(machineIdString.c_str(), "ipAddr");
 
 			if( ip == NULL ) {
 				for (int i = 0; i < processes; i++){
-					ipAddrs.push_back(strtoul(ini.GetValue(zoneIdString.c_str(), format("ipAddr%d", i).c_str()), NULL, 10));
+					ipAddrs.push_back(strtoul(ini.GetValue(machineIdString.c_str(), format("ipAddr%d", i).c_str()), NULL, 10));
 				}
 			}
 			else {
@@ -652,7 +657,7 @@ ACTOR Future<Void> restartSimulatedSystem(
 				}
 			}
 
-			LocalityData	localities(Optional<Standalone<StringRef>>(), zoneId, zoneId, dcUID);
+			LocalityData	localities(Optional<Standalone<StringRef>>(), zoneId, machineId, dcUID);
 			localities.set(LiteralStringRef("data_hall"), dcUID);
 
 			// SOMEDAY: parse backup agent from test file
@@ -698,7 +703,7 @@ ACTOR Future<Void> restartSimulatedSystem(
 		.detail("DesiredCoordinators", g_simulator.desiredCoordinators)
 		.detail("ProcessesPerMachine", g_simulator.processesPerMachine);
 
-	Void _ = wait(delay(1.0));
+	wait(delay(1.0));
 
 	return Void();
 }
@@ -738,8 +743,9 @@ StringRef StringRefOf(const char* s) {
 
 void SimulationConfig::generateNormalConfig(int minimumReplication, int minimumRegions) {
 	set_config("new");
-	bool generateFearless = minimumRegions > 1 || g_random->random01() < 0.5;
-	datacenters = generateFearless ? ( minimumReplication > 0 || g_random->random01() < 0.5 ? 4 : 6 ) : g_random->randomInt( 1, 4 );
+	const bool simple = false;  // Set true to simplify simulation configs for easier debugging
+	bool generateFearless = simple ? false : (minimumRegions > 1 || g_random->random01() < 0.5);
+	datacenters = simple ? 1 : ( generateFearless ? ( minimumReplication > 0 || g_random->random01() < 0.5 ? 4 : 6 ) : g_random->randomInt( 1, 4 ) );
 	if (g_random->random01() < 0.25) db.desiredTLogCount = g_random->randomInt(1,7);
 	if (g_random->random01() < 0.25) db.masterProxyCount = g_random->randomInt(1,7);
 	if (g_random->random01() < 0.25) db.resolverCount = g_random->randomInt(1,7);
@@ -748,8 +754,13 @@ void SimulationConfig::generateNormalConfig(int minimumReplication, int minimumR
 	} else {
 		set_config("memory");
 	}
+	if(simple) {
+		db.desiredTLogCount = 1;
+		db.masterProxyCount = 1;
+		db.resolverCount = 1;
+	}
 
-	int replication_type = std::max(minimumReplication, datacenters > 4 ? g_random->randomInt(1,3) : std::min(g_random->randomInt(0,6), 3));
+	int replication_type = simple ? 1 : ( std::max(minimumReplication, datacenters > 4 ? g_random->randomInt(1,3) : std::min(g_random->randomInt(0,6), 3)) );
 	switch (replication_type) {
 	case 0: {
 		TEST( true );  // Simulated cluster using custom redundancy mode
@@ -980,7 +991,7 @@ void SimulationConfig::generateNormalConfig(int minimumReplication, int minimumR
 	}
 
 	//because we protect a majority of coordinators from being killed, it is better to run with low numbers of coordinators to prevent too many processes from being protected
-	coordinators = ( minimumRegions <= 1 && BUGGIFY ) ? g_random->randomInt(1, machine_count+1) : 1;
+	coordinators = ( minimumRegions <= 1 && BUGGIFY ) ? g_random->randomInt(1, std::max(machine_count,2)) : 1;
 
 	if(minimumReplication > 1 && datacenters == 3) {
 		//low latency tests in 3 data hall mode need 2 other data centers with 2 machines each to avoid waiting for logs to recover.
@@ -1006,11 +1017,11 @@ void setupSimulatedSystem( vector<Future<Void>> *systemActors, std::string baseF
 	for( auto kv : startingConfigJSON) {
 		startingConfigString += " ";
 		if( kv.second.type() == json_spirit::int_type ) {
-			startingConfigString += kv.first + ":=" + format("%d", kv.second.get_int()); 
+			startingConfigString += kv.first + ":=" + format("%d", kv.second.get_int());
 		} else if( kv.second.type() == json_spirit::str_type ) {
-			startingConfigString += kv.second.get_str(); 
+			startingConfigString += kv.second.get_str();
 		} else if( kv.second.type() == json_spirit::array_type ) {
-			startingConfigString += kv.first + "=" + json_spirit::write_string(json_spirit::mValue(kv.second.get_array()), json_spirit::Output_options::none); 
+			startingConfigString += kv.first + "=" + json_spirit::write_string(json_spirit::mValue(kv.second.get_array()), json_spirit::Output_options::none);
 		} else {
 			ASSERT(false);
 		}
@@ -1086,14 +1097,26 @@ void setupSimulatedSystem( vector<Future<Void>> *systemActors, std::string baseF
 			}
 		}
 	} else {
+		int assignedMachines = 0;
+		int coordCount = coordinatorCount;
+		if(coordinatorCount>4) {
+			++coordCount;
+		}
 		for( int dc = 0; dc < dataCenters; dc++ ) {
-			int dcCoordinators = coordinatorCount / dataCenters + (dc < coordinatorCount%dataCenters);
-
+			int dcCoordinators = coordCount / dataCenters + (dc < coordCount%dataCenters);
+			int machines = machineCount / dataCenters + (dc < machineCount % dataCenters);
 			for(int m = 0; m < dcCoordinators; m++) {
-				uint32_t ip = 2<<24 | dc<<16 | 1<<8 | m;
-				coordinatorAddresses.push_back(NetworkAddress(ip, 1, true, sslEnabled));
-				TraceEvent("SelectedCoordinator").detail("Address", coordinatorAddresses.back());
+				if(coordinatorCount>4 && (assignedMachines==4 || (m+1==dcCoordinators && assignedMachines<4 && assignedMachines+machines-dcCoordinators>=4))) {
+					uint32_t ip = 2<<24 | dc<<16 | 1<<8 | m;
+					TraceEvent("SkippedCoordinator").detail("Address", ip).detail("M", m).detail("Machines", machines).detail("Assigned", assignedMachines).detail("DcCoord", dcCoordinators).detail("CoordinatorCount", coordinatorCount);
+				} else {
+					uint32_t ip = 2<<24 | dc<<16 | 1<<8 | m;
+					coordinatorAddresses.push_back(NetworkAddress(ip, 1, true, sslEnabled));
+					TraceEvent("SelectedCoordinator").detail("Address", coordinatorAddresses.back()).detail("M", m).detail("Machines", machines).detail("Assigned", assignedMachines).detail("DcCoord", dcCoordinators).detail("P1", (m+1==dcCoordinators)).detail("P2", (assignedMachines<4)).detail("P3", (assignedMachines+machines-dcCoordinators>=4)).detail("CoordinatorCount", coordinatorCount);
+				}
+				assignedMachines++;
 			}
+			assignedMachines += machines-dcCoordinators;
 		}
 	}
 
@@ -1133,8 +1156,14 @@ void setupSimulatedSystem( vector<Future<Void>> *systemActors, std::string baseF
 		printf("Datacenter %d: %d/%d machines, %d/%d coordinators\n", dc, machines, machineCount, dcCoordinators, coordinatorCount);
 		ASSERT( dcCoordinators <= machines );
 		int useSeedForMachine = g_random->randomInt(0, machines);
+		Standalone<StringRef> zoneId;
+		Standalone<StringRef> newZoneId;
 		for( int machine = 0; machine < machines; machine++ ) {
-			Standalone<StringRef> zoneId(g_random->randomUniqueID().toString());
+			Standalone<StringRef> machineId(g_random->randomUniqueID().toString());
+			if(machine == 0 || machineCount - dataCenters <= 4 || assignedMachines != 4 || simconfig.db.regions.size() || g_random->random01() < 0.5) {
+				zoneId = g_random->randomUniqueID().toString();
+				newZoneId = g_random->randomUniqueID().toString();
+			}
 
 			//Choose a machine class
 			ProcessClass processClass = ProcessClass(ProcessClass::UnsetClass, ProcessClass::CommandLineSource);
@@ -1154,7 +1183,7 @@ void setupSimulatedSystem( vector<Future<Void>> *systemActors, std::string baseF
 				ips.push_back(2 << 24 | dc << 16 | g_random->randomInt(1, i+2) << 8 | machine);
 			}
 			// check the sslEnablementMap using only one ip(
-			LocalityData	localities(Optional<Standalone<StringRef>>(), zoneId, zoneId, dcUID);
+			LocalityData	localities(Optional<Standalone<StringRef>>(), zoneId, machineId, dcUID);
 			localities.set(LiteralStringRef("data_hall"), dcUID);
 			systemActors->push_back(reportErrors(simulatedMachine(conn, ips, sslEnabled, tlsOptions,
 				localities, processClass, baseFolder, false, machine == useSeedForMachine, true ), "SimulatedMachine"));
@@ -1165,8 +1194,9 @@ void setupSimulatedSystem( vector<Future<Void>> *systemActors, std::string baseF
 					extraIps.push_back(4 << 24 | dc << 16 | g_random->randomInt(1, i + 2) << 8 | machine);
 				}
 
-				Standalone<StringRef> newZoneId = Standalone<StringRef>(g_random->randomUniqueID().toString());
-				LocalityData	localities(Optional<Standalone<StringRef>>(), newZoneId, newZoneId, dcUID);
+				Standalone<StringRef> newMachineId(g_random->randomUniqueID().toString());
+
+				LocalityData	localities(Optional<Standalone<StringRef>>(), newZoneId, newMachineId, dcUID);
 				localities.set(LiteralStringRef("data_hall"), dcUID);
 				systemActors->push_back(reportErrors(simulatedMachine(*g_simulator.extraDB, extraIps, sslEnabled, tlsOptions,
 					localities,
@@ -1279,8 +1309,8 @@ ACTOR void setupAndRun(std::string dataFolder, const char *testFile, bool reboot
 	state int minimumRegions = 0;
 	checkExtraDB(testFile, extraDB, minimumReplication, minimumRegions);
 
-	Void _ = wait( g_simulator.onProcess( g_simulator.newProcess(
-			"TestSystem", 0x01010101, 1, LocalityData(Optional<Standalone<StringRef>>(), Standalone<StringRef>(g_random->randomUniqueID().toString()), Optional<Standalone<StringRef>>(), Optional<Standalone<StringRef>>()), ProcessClass(ProcessClass::TesterClass, ProcessClass::CommandLineSource), "", "" ), TaskDefaultYield ) );
+	wait( g_simulator.onProcess( g_simulator.newProcess(
+			"TestSystem", 0x01010101, 1, LocalityData(Optional<Standalone<StringRef>>(), Standalone<StringRef>(g_random->randomUniqueID().toString()), Standalone<StringRef>(g_random->randomUniqueID().toString()), Optional<Standalone<StringRef>>()), ProcessClass(ProcessClass::TesterClass, ProcessClass::CommandLineSource), "", "" ), TaskDefaultYield ) );
 	Sim2FileSystem::newFileSystem();
 	FlowTransport::createInstance(1);
 	if (tlsOptions->enabled()) {
@@ -1292,17 +1322,17 @@ ACTOR void setupAndRun(std::string dataFolder, const char *testFile, bool reboot
 	try {
 		//systemActors.push_back( startSystemMonitor(dataFolder) );
 		if (rebooting) {
-			Void _ = wait( timeoutError( restartSimulatedSystem( &systemActors, dataFolder, &testerCount, &connFile, &startingConfiguration, tlsOptions, extraDB), 100.0 ) );
+			wait( timeoutError( restartSimulatedSystem( &systemActors, dataFolder, &testerCount, &connFile, &startingConfiguration, tlsOptions, extraDB), 100.0 ) );
 		}
 		else {
 			g_expect_full_pointermap = 1;
 			setupSimulatedSystem( &systemActors, dataFolder, &testerCount, &connFile, &startingConfiguration, extraDB, minimumReplication, minimumRegions, tlsOptions );
-			Void _ = wait( delay(1.0) ); // FIXME: WHY!!!  //wait for machines to boot
+			wait( delay(1.0) ); // FIXME: WHY!!!  //wait for machines to boot
 		}
 		std::string clusterFileDir = joinPath( dataFolder, g_random->randomUniqueID().toString() );
 		platform::createDirectory( clusterFileDir );
 		writeFile(joinPath(clusterFileDir, "fdb.cluster"), connFile.get().toString());
-		Void _ = wait(timeoutError(runTests(Reference<ClusterConnectionFile>(new ClusterConnectionFile(joinPath(clusterFileDir, "fdb.cluster"))), TEST_TYPE_FROM_FILE, TEST_ON_TESTERS, testerCount, testFile, startingConfiguration), buggifyActivated ? 36000.0 : 5400.0));
+		wait(timeoutError(runTests(Reference<ClusterConnectionFile>(new ClusterConnectionFile(joinPath(clusterFileDir, "fdb.cluster"))), TEST_TYPE_FROM_FILE, TEST_ON_TESTERS, testerCount, testFile, startingConfiguration), buggifyActivated ? 36000.0 : 5400.0));
 	} catch (Error& e) {
 		TraceEvent(SevError, "SetupAndRunError").error(e);
 	}

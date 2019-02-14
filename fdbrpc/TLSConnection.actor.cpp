@@ -18,17 +18,16 @@
  * limitations under the License.
  */
 
-#include "flow/actorcompiler.h"
+#include <memory>
+#include "flow/flow.h"
 #include "flow/network.h"
 #include "flow/Knobs.h"
-
-#include "TLSConnection.h"
-
-#include "ITLSPlugin.h"
-#include "LoadPlugin.h"
-#include "Platform.h"
-#include "IAsyncFile.h"
-#include <memory>
+#include "fdbrpc/TLSConnection.h"
+#include "fdbrpc/ITLSPlugin.h"
+#include "fdbrpc/LoadPlugin.h"
+#include "fdbrpc/Platform.h"
+#include "fdbrpc/IAsyncFile.h"
+#include "flow/actorcompiler.h"  // This must be the last #include.
 
 // Name of specialized TLS Plugin
 const char* tlsPluginName = "fdb-libressl-plugin";
@@ -47,10 +46,10 @@ static int send_func(void* ctx, const uint8_t* buf, int len) {
 		int w = conn->conn->write( &sb );
 		return w;
 	} catch ( Error& e ) {
-		TraceEvent("TLSConnectionSendError", conn->getDebugID()).error(e).suppressFor(1.0);
+		TraceEvent("TLSConnectionSendError", conn->getDebugID()).suppressFor(1.0).detail("Peer", conn->getPeerAddress().toString()).error(e);
 		return -1;
 	} catch ( ... ) {
-		TraceEvent("TLSConnectionSendError", conn->getDebugID()).error( unknown_error() ).suppressFor(1.0);
+		TraceEvent("TLSConnectionSendError", conn->getDebugID()).suppressFor(1.0).detail("Peer", conn->getPeerAddress()).error( unknown_error() );
 		return -1;
 	}
 }
@@ -63,10 +62,10 @@ static int recv_func(void* ctx, uint8_t* buf, int len) {
 		int r = conn->conn->read( buf, buf + len );
 		return r;
 	} catch ( Error& e ) {
-		TraceEvent("TLSConnectionRecvError", conn->getDebugID()).error(e).suppressFor(1.0);
+		TraceEvent("TLSConnectionRecvError", conn->getDebugID()).suppressFor(1.0).detail("Peer", conn->getPeerAddress()).error(e);
 		return -1;
 	} catch ( ... ) {
-		TraceEvent("TLSConnectionRecvError", conn->getDebugID()).error( unknown_error() ).suppressFor(1.0);
+		TraceEvent("TLSConnectionRecvError", conn->getDebugID()).suppressFor(1.0).detail("Peer", conn->getPeerAddress()).error( unknown_error() );
 		return -1;
 	}
 }
@@ -76,11 +75,11 @@ ACTOR static Future<Void> handshake( TLSConnection* self ) {
 		int r = self->session->handshake();
 		if ( r == ITLSSession::SUCCESS ) break;
 		if ( r == ITLSSession::FAILED ) {
-			TraceEvent("TLSConnectionHandshakeError", self->getDebugID()).suppressFor(1.0);
+			TraceEvent("TLSConnectionHandshakeError", self->getDebugID()).suppressFor(1.0).detail("Peer", self->getPeerAddress());
 			throw connection_failed();
 		}
 		ASSERT( r == ITLSSession::WANT_WRITE || r == ITLSSession::WANT_READ );
-		Void _ = wait( r == ITLSSession::WANT_WRITE ? self->conn->onWritable() : self->conn->onReadable() );
+		wait( r == ITLSSession::WANT_WRITE ? self->conn->onWritable() : self->conn->onReadable() );
 	}
 
 	TraceEvent("TLSConnectionHandshakeSuccessful", self->getDebugID()).suppressFor(1.0).detail("Peer", self->getPeerAddress());
@@ -207,8 +206,8 @@ void TLSOptions::set_cert_file( std::string const& cert_file ) {
 		TraceEvent("TLSConnectionSettingCertFile").detail("CertFilePath", cert_file);
 		policyInfo.cert_path = cert_file;
 		set_cert_data( readFileBytes( cert_file, CERT_FILE_MAX_SIZE ) );
-	} catch ( Error& ) {
-		TraceEvent(SevError, "TLSOptionsSetCertFileError").detail("Filename", cert_file);
+	} catch ( Error& e) {
+		TraceEvent(SevError, "TLSOptionsSetCertFileError").detail("Filename", cert_file).error(e).GetLastError();
 		throw;
 	}
 }
@@ -219,8 +218,8 @@ void TLSOptions::set_ca_file(std::string const& ca_file) {
 		policyInfo.ca_path = ca_file;
 		set_ca_data(readFileBytes(ca_file, CERT_FILE_MAX_SIZE));
 	}
-	catch (Error&) {
-		TraceEvent(SevError, "TLSOptionsSetCertAError").detail("Filename", ca_file);
+	catch (Error& e) {
+		TraceEvent(SevError, "TLSOptionsSetCertAError").detail("Filename", ca_file).error(e).GetLastError();
 		throw;
 	}
 }
@@ -263,8 +262,8 @@ void TLSOptions::set_key_file( std::string const& key_file ) {
 		TraceEvent("TLSConnectionSettingKeyFile").detail("KeyFilePath", key_file);
 		policyInfo.key_path = key_file;
 		set_key_data( readFileBytes( key_file, CERT_FILE_MAX_SIZE ) );
-	} catch ( Error& ) {
-		TraceEvent(SevError, "TLSOptionsSetKeyFileError").detail("Filename", key_file);
+	} catch ( Error& e) {
+		TraceEvent(SevError, "TLSOptionsSetKeyFileError").detail("Filename", key_file).error(e).GetLastError();
 		throw;
 	}
 }
@@ -326,7 +325,7 @@ ACTOR static Future<ErrorOr<Standalone<StringRef>>> readEntireFile( std::string 
 ACTOR static Future<Void> watchFileForChanges( std::string filename, AsyncVar<Standalone<StringRef>> *contents_var ) {
 	state std::time_t lastModTime = wait(IAsyncFileSystem::filesystem()->lastWriteTime(filename));
 	loop {
-		Void _ = wait(delay(FLOW_KNOBS->TLS_CERT_REFRESH_DELAY_SECONDS));
+		wait(delay(FLOW_KNOBS->TLS_CERT_REFRESH_DELAY_SECONDS));
 		std::time_t modtime = wait(IAsyncFileSystem::filesystem()->lastWriteTime(filename));
 		if (lastModTime != modtime) {
 			lastModTime = modtime;
@@ -347,7 +346,7 @@ ACTOR static Future<Void> reloadConfigurationOnChange( TLSOptions::PolicyInfo *p
 		if (IAsyncFileSystem::filesystem() != nullptr) {
 			break;
 		}
-		Void _ = wait(delay(1.0));
+		wait(delay(1.0));
 	}
 	state int mismatches = 0;
 	state AsyncVar<Standalone<StringRef>> ca_var;
@@ -361,7 +360,7 @@ ACTOR static Future<Void> reloadConfigurationOnChange( TLSOptions::PolicyInfo *p
 		state Future<Void> ca_changed = ca_var.onChange();
 		state Future<Void> key_changed = key_var.onChange();
 		state Future<Void> cert_changed = cert_var.onChange();
-		Void _ = wait( ca_changed || key_changed || cert_changed );
+		wait( ca_changed || key_changed || cert_changed );
 		if (ca_changed.isReady()) {
 			TraceEvent(SevInfo, "TLSRefreshCAChanged").detail("path", pci->ca_path).detail("length", ca_var.get().size());
 			pci->ca_contents = ca_var.get();

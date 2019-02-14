@@ -22,9 +22,9 @@
 #define FDBCLIENT_SNAPSHOTCACHE_H
 #pragma once
 
-#include "FDBTypes.h"
-#include "NativeAPI.h"
-#include "SystemData.h"
+#include "fdbclient/FDBTypes.h"
+#include "fdbclient/NativeAPI.h"
+#include "fdbclient/SystemData.h"
 #include "flow/IndexedSet.h"
 
 struct ExtStringRef {
@@ -190,8 +190,8 @@ public:
 				return ExtStringRef( it->values[ (offset-1)>>1 ].key, 1-(offset&1) );
 		}
 
-		KeyValueRef const& kv( Arena& arena ){  // only if is_kv()
-			return it->values[ (offset-2)>>1 ];
+		const KeyValueRef* kv(Arena& arena) { // only if is_kv()
+			return &it->values[(offset - 2) >> 1];
 		}
 
 		iterator& operator++() {

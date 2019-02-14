@@ -38,7 +38,7 @@
 
 #include "flow/SimpleOpt.h"
 
-#include "FlowLineNoise.h"
+#include "fdbcli/FlowLineNoise.h"
 
 #include <signal.h>
 
@@ -47,15 +47,17 @@
 #include "fdbcli/linenoise/linenoise.h"
 #endif
 
-#ifndef WIN32
+#if defined(CMAKE_BUILD) || !defined(WIN32)
 #include "versions.h"
 #endif
+
+#include "flow/actorcompiler.h"  // This must be the last #include.
 
 extern const char* getHGVersion();
 
 std::vector<std::string> validOptions;
 
-enum { OPT_CONNFILE, OPT_DATABASE, OPT_HELP, OPT_TRACE, OPT_TRACE_DIR, OPT_TIMEOUT, OPT_EXEC, OPT_NO_STATUS, OPT_STATUS_FROM_JSON, OPT_VERSION };
+enum { OPT_CONNFILE, OPT_DATABASE, OPT_HELP, OPT_TRACE, OPT_TRACE_DIR, OPT_TIMEOUT, OPT_EXEC, OPT_NO_STATUS, OPT_STATUS_FROM_JSON, OPT_VERSION, OPT_TRACE_FORMAT };
 
 CSimpleOpt::SOption g_rgOptions[] = {
 	{ OPT_CONNFILE, "-C", SO_REQ_SEP },
@@ -72,6 +74,7 @@ CSimpleOpt::SOption g_rgOptions[] = {
 	{ OPT_STATUS_FROM_JSON, "--status-from-json", SO_REQ_SEP },
 	{ OPT_VERSION,         "--version",        SO_NONE },
 	{ OPT_VERSION,         "-v",               SO_NONE },
+	{ OPT_TRACE_FORMAT, "--trace_format", SO_REQ_SEP },
 
 #ifndef TLS_DISABLED
 	TLS_OPTION_FLAGS
@@ -133,7 +136,7 @@ public:
 	//Applies all enabled transaction options to the given transaction
 	void apply(Reference<ReadYourWritesTransaction> tr) {
 		for(auto itr = transactionOptions.options.begin(); itr != transactionOptions.options.end(); ++itr)
-			tr->setOption(itr->first, itr->second.cast_to<StringRef>());
+			tr->setOption(itr->first, itr->second.castTo<StringRef>());
 	}
 
 	//Returns true if any options have been set
@@ -171,7 +174,7 @@ private:
 		if(intrans)
 			tr->setOption(option, arg);
 
-		transactionOptions.setOption(option, enabled, arg.cast_to<StringRef>());
+		transactionOptions.setOption(option, enabled, arg.castTo<StringRef>());
 	}
 
 	//A group of enabled options (of type T::Option) as well as a legal options map from string to T::Option
@@ -186,8 +189,8 @@ private:
 		//Enable or disable an option. Returns true if option value changed
 		bool setOption(typename T::Option option, bool enabled, Optional<StringRef> arg) {
 			auto optionItr = options.find(option);
-			if(enabled && (optionItr == options.end() || Optional<Standalone<StringRef>>(optionItr->second).cast_to< StringRef >() != arg)) {
-				options[option] = arg.cast_to<Standalone<StringRef>>();
+			if(enabled && (optionItr == options.end() || Optional<Standalone<StringRef>>(optionItr->second).castTo< StringRef >() != arg)) {
+				options[option] = arg.castTo<Standalone<StringRef>>();
 				return true;
 			}
 			else if(!enabled && optionItr != options.end()) {
@@ -399,6 +402,9 @@ static void printProgramUsage(const char* name) {
 		   "  --log-dir PATH Specifes the output directory for trace files. If\n"
 		   "                 unspecified, defaults to the current directory. Has\n"
 		   "                 no effect unless --log is specified.\n"
+		   "  --trace_format FORMAT\n"
+		   "                 Select the format of the log files. xml (the default) and json\n"
+		   "                 are supported. Has no effect unless --log is specified.\n"
 		   "  --exec CMDS    Immediately executes the semicolon separated CLI commands\n"
 		   "                 and then exits.\n"
 		   "  --no-status    Disables the initial status check done when starting\n"
@@ -663,6 +669,38 @@ std::string logBackupDR(const char *context, std::map<std::string, std::string> 
 	return outputString;
 }
 
+int getNumofNonExcludedMachines(StatusObjectReader statusObjCluster) {
+	StatusObjectReader machineMap;
+	int numOfNonExcludedMachines = 0;
+	if (statusObjCluster.get("machines", machineMap)) {
+		for (auto mach : machineMap.obj()) {
+			StatusObjectReader machine(mach.second);
+			if (machine.has("excluded") && !machine.last().get_bool())
+				numOfNonExcludedMachines++;
+		}
+	}
+	return numOfNonExcludedMachines;
+}
+
+std::pair<int, int> getNumOfNonExcludedProcessAndZones(StatusObjectReader statusObjCluster) {
+	StatusObjectReader processesMap;
+	std::set<std::string> zones;
+	int numOfNonExcludedProcesses = 0;
+	if (statusObjCluster.get("processes", processesMap)) {
+		for (auto proc : processesMap.obj()) {
+			StatusObjectReader process(proc.second);
+			if (process.has("excluded") && process.last().get_bool())
+				continue;
+			numOfNonExcludedProcesses++;
+			std::string zoneId;
+			if (process.get("locality.zoneid", zoneId)) {
+				zones.insert(zoneId);
+			}
+		}
+	}
+	return { numOfNonExcludedProcesses, zones.size() };
+}
+
 void printStatus(StatusObjectReader statusObj, StatusClient::StatusLevel level, bool displayDatabaseAvailable = true, bool hideErrorMessages = false) {
 	if (FlowTransport::transport().incompatibleOutgoingConnectionsPresent()) {
 		printf("WARNING: One or more of the processes in the cluster is incompatible with this version of fdbcli.\n\n");
@@ -745,9 +783,11 @@ void printStatus(StatusObjectReader statusObj, StatusClient::StatusLevel level, 
 							fatalRecoveryState = true;
 
 							if (name == "recruiting_transaction_servers") {
-								description += format("\nNeed at least %d log servers, %d proxies and %d resolvers.", recoveryState["required_logs"].get_int(), recoveryState["required_proxies"].get_int(), recoveryState["required_resolvers"].get_int());
-								if (statusObjCluster.has("machines") && statusObjCluster.has("processes"))
-									description += format("\nHave %d processes on %d machines.", statusObjCluster["processes"].get_obj().size(), statusObjCluster["machines"].get_obj().size());
+								description += format("\nNeed at least %d log servers across unique zones, %d proxies and %d resolvers.", recoveryState["required_logs"].get_int(), recoveryState["required_proxies"].get_int(), recoveryState["required_resolvers"].get_int());
+								if (statusObjCluster.has("machines") && statusObjCluster.has("processes")) {
+									auto numOfNonExcludedProcessesAndZones = getNumOfNonExcludedProcessAndZones(statusObjCluster);
+									description += format("\nHave %d non-excluded processes on %d machines across %d zones.", numOfNonExcludedProcessesAndZones.first, getNumofNonExcludedMachines(statusObjCluster), numOfNonExcludedProcessesAndZones.second);
+								}
 							} else if (name == "locking_old_transaction_servers" && recoveryState["missing_logs"].get_str().size()) {
 								description += format("\nNeed one or more of the following log servers: %s", recoveryState["missing_logs"].get_str().c_str());
 							}
@@ -1455,14 +1495,14 @@ int printStatusFromJSON( std::string const& jsonFileName ) {
 }
 
 ACTOR Future<Void> timeWarning( double when, const char* msg ) {
-	Void _ = wait( delay(when) );
+	wait( delay(when) );
 	fputs( msg, stderr );
 
 	return Void();
 }
 
 ACTOR Future<Void> checkStatus(Future<Void> f, Reference<ClusterConnectionFile> clusterFile, bool displayDatabaseAvailable = true) {
-	Void _ = wait(f);
+	wait(f);
 	StatusObject s = wait(StatusClient::statusFetcher(clusterFile));
 	printf("\n");
 	printStatus(s, StatusClient::MINIMAL, displayDatabaseAvailable);
@@ -1474,23 +1514,15 @@ ACTOR template <class T> Future<T> makeInterruptable( Future<T> f ) {
 	Future<Void> interrupt = LineNoise::onKeyboardInterrupt();
 	choose {
 		when (T t = wait(f)) { return t; }
-		when (Void _ = wait(interrupt)) {
+		when (wait(interrupt)) {
 			f.cancel();
 			throw operation_cancelled();
 		}
 	}
 }
 
-ACTOR Future<Database> openDatabase( Reference<ClusterConnectionFile> ccf, Reference<Cluster> cluster, Standalone<StringRef> name, bool doCheckStatus ) {
-	state Database db = wait( cluster->createDatabase(name) );
-	if (doCheckStatus) {
-		Void _ = wait( makeInterruptable( checkStatus( Void(), ccf )) );
-	}
-	return db;
-}
-
 ACTOR Future<Void> commitTransaction( Reference<ReadYourWritesTransaction> tr ) {
-	Void _ = wait( makeInterruptable( tr->commit() ) );
+	wait( makeInterruptable( tr->commit() ) );
 	auto ver = tr->getCommittedVersion();
 	if (ver != invalidVersion)
 		printf("Committed (%" PRId64 ")\n", ver);
@@ -1860,7 +1892,7 @@ ACTOR Future<bool> include( Database db, std::vector<StringRef> tokens ) {
 		}
 	}
 
-	Void _ = wait( makeInterruptable(includeServers(db, addresses)) );
+	wait( makeInterruptable(includeServers(db, addresses)) );
 	return false;
 };
 
@@ -1986,14 +2018,14 @@ ACTOR Future<bool> exclude( Database db, std::vector<StringRef> tokens, Referenc
 			}
 		}
 
-		Void _ = wait( makeInterruptable(excludeServers(db,addresses)) );
+		wait( makeInterruptable(excludeServers(db,addresses)) );
 
 		printf("Waiting for state to be removed from all excluded servers. This may take a while.\n");
 		printf("(Interrupting this wait with CTRL+C will not cancel the data movement.)\n");
 
 		if(warn.isValid())
 			warn.cancel();
-		Void _ = wait( makeInterruptable(waitForExcludedServers(db,addresses)) );
+		wait( makeInterruptable(waitForExcludedServers(db,addresses)) );
 
 		std::vector<ProcessData> workers = wait( makeInterruptable(getWorkers(db)) );
 		std::map<uint32_t, std::set<uint16_t>> workerPorts;
@@ -2073,7 +2105,7 @@ ACTOR Future<bool> setClass( Database db, std::vector<StringRef> tokens ) {
 		return true;
 	}
 
-	Void _ = wait( makeInterruptable(setClass(db,addr,processClass)) );
+	wait( makeInterruptable(setClass(db,addr,processClass)) );
 	return false;
 };
 
@@ -2337,6 +2369,11 @@ struct CLIOptions {
 				return 0;
 			case OPT_STATUS_FROM_JSON:
 				return printStatusFromJSON(args.OptionArg());
+			case OPT_TRACE_FORMAT:
+				if (!selectTraceFormatter(args.OptionArg())) {
+					fprintf(stderr, "WARNING: Unrecognized trace format `%s'\n", args.OptionArg());
+				}
+				break;
 			case OPT_VERSION:
 				printVersion();
 				return FDB_EXIT_SUCCESS;
@@ -2359,12 +2396,9 @@ Future<T> stopNetworkAfter( Future<T> what ) {
 
 ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 	state LineNoise& linenoise = *plinenoise;
-	state bool connected = false;
-	state bool opened = false;
 	state bool intrans = false;
 
 	state Database db;
-	state Reference<Cluster> cluster;
 	state Reference<ReadYourWritesTransaction> tr;
 
 	state bool writeMode = false;
@@ -2376,9 +2410,6 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 	state FdbOptions activeOptions;
 
 	state FdbOptions *options = &globalOptions;
-
-	state const char *database = "DB";
-	state Standalone<StringRef> openDbName = StringRef(database);
 
 	state Reference<ClusterConnectionFile> ccf;
 
@@ -2394,10 +2425,10 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 	TraceEvent::setNetworkThread();
 
 	try {
-		cluster = Cluster::createCluster(ccf->getFilename().c_str(), -1);
-		connected = true;
-		if (!opt.exec.present())
+		db = Database::createDatabase(ccf, -1);
+		if (!opt.exec.present()) {
 			printf("Using cluster file `%s'.\n", ccf->getFilename().c_str());
+		}
 	}
 	catch (Error& e) {
 		printf("ERROR: %s (%d)\n", e.what(), e.code());
@@ -2417,28 +2448,16 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 			.trackLatest("ProgramStart");
 	}
 
-	if (connected && database) {
-		try {
-			Database _db = wait( openDatabase( ccf, cluster, openDbName, !opt.exec.present() && opt.initialStatusCheck ) );
-			db = _db;
-			tr = Reference<ReadYourWritesTransaction>();
-			opened = true;
-			if (!opt.exec.present() && !opt.initialStatusCheck)
-				printf("\n");
-		} catch (Error& e) {
-			if(e.code() != error_code_actor_cancelled) {
-				printf("ERROR: %s (%d)\n", e.what(), e.code());
-				printf("Unable to open database `%s'\n", database);
-			}
-			return 1;
-		}
-	}
-
 	if (!opt.exec.present()) {
+		if(opt.initialStatusCheck) {
+			wait( makeInterruptable( checkStatus( Void(), ccf )) );
+		}
+		else {
+			printf("\n");
+		}
+
 		printf("Welcome to the fdbcli. For help, type `help'.\n");
-
 		validOptions = options->getValidOptions();
-
 	}
 
 	state bool is_error = false;
@@ -2567,19 +2586,13 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 					continue;
 				}
 
-				if (!connected) {
-					printf("ERROR: Not connected\n");
-					is_error = true;
-					continue;
-				}
-
 				if (tokencmp(tokens[0], "waitconnected")) {
-					Void _ = wait( makeInterruptable( cluster->onConnected() ) );
+					wait( makeInterruptable( db->onConnected() ) );
 					continue;
 				}
 
 				if( tokencmp(tokens[0], "waitopen")) {
-					Version _ = wait( getTransaction(db,tr,options,intrans)->getReadVersion() );
+					wait(success( getTransaction(db,tr,options,intrans)->getReadVersion() ));
 					continue;
 				}
 
@@ -2668,12 +2681,6 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 					continue;
 				}
 
-				if (!opened) {
-					printf("ERROR: No database open\n");
-					is_error = true;
-					continue;
-				}
-
 				if (tokencmp(tokens[0], "begin")) {
 					if (tokens.size() != 1) {
 						printUsage(tokens[0]);
@@ -2699,7 +2706,7 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 						printf("ERROR: No active transaction\n");
 						is_error = true;
 					} else {
-						Void _ = wait( commitTransaction( tr ) );
+						wait( commitTransaction( tr ) );
 						intrans = false;
 						options = &globalOptions;
 					}
@@ -2809,7 +2816,7 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 						printUsage(tokens[0]);
 						is_error = true;
 					}
-					Void _ = wait( makeInterruptable( forceRecovery( ccf ) ) );
+					wait( makeInterruptable( forceRecovery( ccf ) ) );
 					continue;
 				}
 
@@ -2835,7 +2842,7 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 							}
 							state Future<Optional<Standalone<StringRef>>> sampleRateFuture = tr->get(fdbClientInfoTxnSampleRate);
 							state Future<Optional<Standalone<StringRef>>> sizeLimitFuture = tr->get(fdbClientInfoTxnSizeLimit);
-							Void _ = wait(makeInterruptable(success(sampleRateFuture) && success(sizeLimitFuture)));
+							wait(makeInterruptable(success(sampleRateFuture) && success(sizeLimitFuture)));
 							std::string sampleRateStr = "default", sizeLimitStr = "default";
 							if (sampleRateFuture.get().present()) {
 								const double sampleRateDbl = BinaryReader::fromStringRef<double>(sampleRateFuture.get().get(), Unversioned());
@@ -2886,7 +2893,7 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 							tr->set(fdbClientInfoTxnSampleRate, BinaryWriter::toValue(sampleRate, Unversioned()));
 							tr->set(fdbClientInfoTxnSizeLimit, BinaryWriter::toValue(sizeLimit, Unversioned()));
 							if (!intrans) {
-								Void _ = wait( commitTransaction( tr ) );
+								wait( commitTransaction( tr ) );
 							}
 							continue;
 						}
@@ -2973,7 +2980,7 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 								}
 							}
 							if (!is_error) {
-								Void _ = wait(waitForAll(all_profiler_responses));
+								wait(waitForAll(all_profiler_responses));
 								for (int i = 0; i < all_profiler_responses.size(); i++) {
 									const ErrorOr<Void>& err = all_profiler_responses[i].get();
 									if (err.isError()) {
@@ -3142,7 +3149,7 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 						tr->set(tokens[1], tokens[2]);
 
 						if (!intrans) {
-							Void _ = wait( commitTransaction( tr ) );
+							wait( commitTransaction( tr ) );
 						}
 					}
 					continue;
@@ -3163,7 +3170,7 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 						tr->clear(tokens[1]);
 
 						if (!intrans) {
-							Void _ = wait( commitTransaction( tr ) );
+							wait( commitTransaction( tr ) );
 						}
 					}
 					continue;
@@ -3184,7 +3191,7 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 						tr->clear(KeyRangeRef(tokens[1], tokens[2]));
 
 						if (!intrans) {
-							Void _ = wait( commitTransaction( tr ) );
+							wait( commitTransaction( tr ) );
 						}
 					}
 					continue;
@@ -3196,10 +3203,10 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 						is_error = true;
 					} else {
 						if(tokencmp(tokens[1], "on")) {
-							int _ = wait(setDDMode(db, 1));
+							wait(success(setDDMode(db, 1)));
 							printf("Data distribution is enabled\n");
 						} else if(tokencmp(tokens[1], "off")) {
-							int _ = wait(setDDMode(db, 0));
+							wait(success(setDDMode(db, 0)));
 							printf("Data distribution is disabled\n");
 						} else {
 							printf("Usage: datadistribution <on|off>\n");
@@ -3275,13 +3282,11 @@ ACTOR Future<int> cli(CLIOptions opt, LineNoise* plinenoise) {
 			if(e.code() != error_code_actor_cancelled)
 				printf("ERROR: %s (%d)\n", e.what(), e.code());
 			is_error = true;
-			if (connected && opened) {
-				if (intrans) {
-					printf("Rolling back current transaction\n");
-					intrans = false;
-					options = &globalOptions;
-					options->apply(tr);
-				}
+			if (intrans) {
+				printf("Rolling back current transaction\n");
+				intrans = false;
+				options = &globalOptions;
+				options->apply(tr);
 			}
 		}
 
@@ -3326,7 +3331,7 @@ ACTOR Future<int> runCli(CLIOptions opt) {
 }
 
 ACTOR Future<Void> timeExit(double duration) {
-	Void _ = wait(delay(duration));
+	wait(delay(duration));
 	fprintf(stderr, "Specified timeout reached -- exiting...\n");
 	return Void();
 }
