@@ -33,16 +33,18 @@ RUN curl -L https://github.com/Kitware/CMake/releases/download/v3.13.4/cmake-3.1
 		cp -r cmake-3.13.4-Linux-x86_64/* /usr/local/ &&\
 		rm -rf cmake.tar.gz cmake-3.13.4-Linux-x86_64 cmake-sha.txt
 
-# install LibreSSL
+# install ninja
 RUN cd /tmp && curl -L https://github.com/ninja-build/ninja/archive/v1.9.0.zip > ninja.zip &&\
     unzip ninja.zip && cd ninja-1.9.0 && scl enable devtoolset-8 -- ./configure.py --bootstrap && cp ninja /usr/bin &&\
-    cd .. && rm -rf ninja-1.9.0 ninja.zip &&\
-    curl -L https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-2.8.2.tar.gz > /tmp/libressl.tar.gz &&\
-    cd /tmp && echo "b8cb31e59f1294557bfc80f2a662969bc064e83006ceef0574e2553a1c254fd5  libressl.tar.gz" > libressl-sha.txt &&\
-    sha256sum -c libressl-sha.txt && tar xf libressl.tar.gz &&\
-    cd libressl-2.8.2 && cd /tmp/libressl-2.8.2 && scl enable devtoolset-8 -- ./configure --prefix=/usr/local/stow/libressl CFLAGS="-fPIC -O3" --prefix=/usr/local &&\
-    cd /tmp/libressl-2.8.2 && scl enable devtoolset-8 -- make -j`nproc` install &&\
-    rm -rf /tmp/libressl-2.8.2 /tmp/libressl.tar.gz
+    cd .. && rm -rf ninja-1.9.0 ninja.zip
+
+# install openssl
+RUN cd /tmp && curl -L https://www.openssl.org/source/openssl-1.1.1d.tar.gz --output openssl.tar.gz &&\
+    echo "1e3a91bc1f9dfce01af26026f856e064eab4c8ee0a8f457b5ae30b40b8b711f2  openssl.tar.gz" > openssl-sha.txt &&\
+    sha256sum -c openssl-sha.txt && tar -xzf openssl.tar.gz &&\
+    cd openssl-1.1.1d && scl enable devtoolset-8 -- ./config --prefix=/usr/local/stow/openssl CFLAGS="-fPIC -O3" --prefix=/usr/local &&\
+    scl enable devtoolset-8 -- make -j`nproc` && scl enable devtoolset-8 -- make -j1 install &&\
+    cd /tmp/ && rm -rf /tmp/openssl-1.1.1d /tmp/openssl.tar.gz
 
 ENV JAVA_HOME=/usr/lib/jvm/java-1.8.0
 ENV CC=/opt/rh/devtoolset-8/root/usr/bin/gcc
